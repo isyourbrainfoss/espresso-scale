@@ -121,7 +121,8 @@ bool Scale::finishCalKnownMass(float mass_g) {
 }
 
 bool Scale::loadCalFromNvs() {
-  if (!prefs.begin(kNvsNs, true)) return false;
+  // RW open so the namespace is created on first boot (avoids Preferences ERROR log).
+  if (!prefs.begin(kNvsNs, false)) return false;
   float f = prefs.getFloat(kNvsFactor, 0);
   prefs.end();
   if (f == 0.0f || isnan(f)) return false;

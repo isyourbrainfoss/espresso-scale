@@ -31,8 +31,8 @@ int weight_hist_idx = 0;
 int weight_hist_count = 0;
 float flow_g_s = 0;
 
-// Auto-timer state
-bool auto_armed = true;  // after tare / near zero
+// Auto-timer: disarmed until first tare (avoids false start on uncalibrated boot noise)
+bool auto_armed = false;
 
 uint32_t last_notify_ms = 0;
 uint32_t last_display_ms = 0;
