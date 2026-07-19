@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "battery.h"
 #include "ble_decent.h"
 #include "buttons.h"
 #include "buzzer.h"
@@ -20,6 +21,7 @@ Buzzer buzzer;
 ShotTimer shot_timer;
 BleDecent ble;
 WifiOta wifi_ota;
+Battery battery;
 
 enum class CalMode : uint8_t { Idle, WaitEmpty, WaitMass };
 CalMode cal_mode = CalMode::Idle;
@@ -27,14 +29,15 @@ float cal_mass_g = kDefaultCalMassG;
 const char* status_msg = nullptr;
 uint32_t status_until_ms = 0;
 
-// Flow rate ring buffer of recent weights @ notify rate
+bool standby = false;
+
 float weight_hist[kFlowRateWindowSamples] = {};
 int weight_hist_idx = 0;
 int weight_hist_count = 0;
 float flow_g_s = 0;
 
-// Auto-timer: disarmed until first tare (avoids false start on uncalibrated boot noise)
-bool auto_armed = false;
+// Auto-timer armed after tare / near zero
+bool auto_armed = true;
 
 uint32_t last_notify_ms = 0;
 uint32_t last_display_ms = 0;
@@ -54,14 +57,12 @@ void pushWeightHistory(float g) {
   if (weight_hist_count < kFlowRateWindowSamples) weight_hist_count++;
 
   if (weight_hist_count >= 2) {
-    // oldest relative to current write position
-    int oldest = weight_hist_idx;  // next write = oldest when full
+    int oldest = weight_hist_idx;
     if (weight_hist_count < kFlowRateWindowSamples) oldest = 0;
     float dt = (weight_hist_count - 1) * (kWeightNotifyIntervalMs / 1000.0f);
     if (dt > 0.01f) {
       float newest = g;
       float old = weight_hist[oldest];
-      // When buffer not full, oldest is index 0; when full, idx is oldest.
       if (weight_hist_count == kFlowRateWindowSamples) {
         old = weight_hist[weight_hist_idx];
       }
@@ -71,31 +72,54 @@ void pushWeightHistory(float g) {
   }
 }
 
+void enterStandby() {
+  if (standby) return;
+  standby = true;
+  shot_timer.stop();
+  display.setPowerSave(true);
+  buzzer.sleepChime();
+  setStatus(nullptr, 0);
+  Serial.println("[power] standby (hold Tare or any press to wake)");
+}
+
+void leaveStandby() {
+  if (!standby) return;
+  standby = false;
+  display.setPowerSave(false);
+  buzzer.wakeChime();
+  setStatus("Wake", 1200);
+  Serial.println("[power] wake");
+}
+
 void doTare(bool from_ble) {
+  if (standby) leaveStandby();
   scale.tare();
-  buzzer.beep();
+  buzzer.tareChime();
   auto_armed = true;
   weight_hist_count = 0;
   weight_hist_idx = 0;
   flow_g_s = 0;
   if (from_ble) {
-    ble.setAppMode(true);  // tare also starts stream (Decent API)
+    ble.setAppMode(true);
   }
 }
 
 void doTimerStart() {
+  if (standby) leaveStandby();
   shot_timer.start();
-  buzzer.beep();
+  buzzer.timerStartChime();
 }
 
 void doTimerStop() {
+  if (standby) leaveStandby();
   shot_timer.stop();
-  buzzer.beep();
+  buzzer.timerStopChime();
 }
 
 void doTimerReset() {
+  if (standby) leaveStandby();
   shot_timer.reset();
-  buzzer.longBeep();
+  buzzer.timerResetChime();
   auto_armed = true;
 }
 
@@ -106,16 +130,18 @@ void handleBleCommand(const DecentCommand& cmd) {
       ble.notifyTareAck();
       break;
     case DecentCommand::Type::LedOn:
+      leaveStandby();
       ble.setAppMode(true);
-      ble.notifyLedAck();
-      buzzer.beep();
+      ble.notifyLedAck(battery.decentBatteryByte());
+      buzzer.tareChime();
       break;
     case DecentCommand::Type::LedOff:
-      ble.notifyLedAck();
+      ble.notifyLedAck(battery.decentBatteryByte());
       break;
     case DecentCommand::Type::PowerOff:
-      // USB breadboard: ignore full power-off; ack as LED style
-      ble.notifyLedAck();
+      // Soft standby instead of hard power-off (USB breadboard)
+      enterStandby();
+      ble.notifyLedAck(battery.decentBatteryByte());
       break;
     case DecentCommand::Type::TimerStart:
       doTimerStart();
@@ -127,7 +153,6 @@ void handleBleCommand(const DecentCommand& cmd) {
       doTimerReset();
       break;
     case DecentCommand::Type::Heartbeat:
-      // handled inside ble layer via noteHeartbeat before callback
       break;
     default:
       break;
@@ -135,10 +160,11 @@ void handleBleCommand(const DecentCommand& cmd) {
 }
 
 void enterCalMode() {
+  if (standby) leaveStandby();
   cal_mode = CalMode::WaitEmpty;
   scale.startCalEmpty();
   setStatus("Cal: empty OK", 3000);
-  buzzer.doubleBeep();
+  buzzer.successChime();
   Serial.println("[cal] empty captured (tared). Place known mass, then:");
   Serial.printf("[cal]   serial: cal %.0f\n", static_cast<double>(cal_mass_g));
   Serial.println("[cal]   or press TARE to finish with default mass");
@@ -148,15 +174,27 @@ void enterCalMode() {
 void finishCal(float mass) {
   if (scale.finishCalKnownMass(mass)) {
     setStatus("Cal OK", 2000);
-    buzzer.doubleBeep();
+    buzzer.successChime();
   } else {
     setStatus("Cal FAIL", 2000);
-    buzzer.longBeep();
+    buzzer.errorChime();
   }
   cal_mode = CalMode::Idle;
 }
 
 void handleButton(BtnEvent ev) {
+  // Any interaction wakes from standby (except we handle TareLong as toggle)
+  if (standby) {
+    if (ev == BtnEvent::TareLong) {
+      leaveStandby();
+      return;
+    }
+    if (ev != BtnEvent::None) {
+      leaveStandby();
+      // Fall through so short press still does its action after wake
+    }
+  }
+
   switch (ev) {
     case BtnEvent::TareShort:
       if (cal_mode == CalMode::WaitMass) {
@@ -165,6 +203,14 @@ void handleButton(BtnEvent ev) {
       }
       doTare(false);
       ble.notifyButton(1, 1);
+      break;
+    case BtnEvent::TareLong:
+      if (standby) {
+        leaveStandby();
+      } else {
+        enterStandby();
+      }
+      ble.notifyButton(1, 2);
       break;
     case BtnEvent::TimerShort:
       if (shot_timer.running()) {
@@ -198,22 +244,18 @@ void handleSerial() {
       }
       if (serial_line.equalsIgnoreCase("help")) {
         Serial.println("Commands:");
-        Serial.println("  help          - this help");
-        Serial.println("  tare          - tare scale");
-        Serial.println("  cal empty     - tare for calibration");
-        Serial.println("  cal <grams>   - finish cal with known mass");
-        Serial.println("  factor        - print calibration factor");
-        Serial.println("  factor <n>    - set calibration factor");
-        Serial.println("  weight        - print current weight");
-        Serial.println("  wifi          - WiFi / OTA status");
-        Serial.println("  wifi set <ssid> <pass>  - save creds & reboot");
-        Serial.println("  wifi clear    - wipe WiFi NVS & reboot to AP");
-        Serial.println("  wifi ap       - force setup AP now");
-        Serial.println("  wifi scan     - list 2.4 GHz networks (ESP cannot use 5 GHz)");
-        Serial.println("  wifi connect  - retry STA with saved credentials");
-        Serial.println("  ip            - print IP address");
+        Serial.println("  help / tare / weight / factor / cal …");
+        Serial.println("  sleep / wake / battery");
+        Serial.println("  wifi / wifi set / wifi scan / wifi connect …");
       } else if (serial_line.equalsIgnoreCase("tare")) {
         doTare(false);
+      } else if (serial_line.equalsIgnoreCase("sleep")) {
+        enterStandby();
+      } else if (serial_line.equalsIgnoreCase("wake")) {
+        leaveStandby();
+      } else if (serial_line.equalsIgnoreCase("battery")) {
+        Serial.printf("battery %s (%d%%) usb=%d\n", battery.label(),
+                      battery.percent(), battery.isUsb() ? 1 : 0);
       } else if (serial_line.equalsIgnoreCase("cal empty")) {
         scale.startCalEmpty();
         cal_mode = CalMode::WaitMass;
@@ -251,9 +293,6 @@ void handleSerial() {
         }
         wifi_ota.printStatus();
       } else if (serial_line.startsWith("wifi set ")) {
-        // wifi set <ssid> <password>
-        // SSID may be quoted: wifi set "vaifai 2.4" secret
-        // Unquoted: first token = ssid, remainder = password (may contain spaces)
         String rest = serial_line.substring(9);
         rest.trim();
         String ssid, pass;
@@ -271,7 +310,6 @@ void handleSerial() {
           int sp = rest.indexOf(' ');
           if (sp <= 0) {
             Serial.println("Usage: wifi set <ssid> <password>");
-            Serial.println("   or: wifi set \"ssid with spaces\" <password>");
             serial_line = "";
             continue;
           }
@@ -279,9 +317,7 @@ void handleSerial() {
           pass = rest.substring(sp + 1);
           pass.trim();
         }
-        if (ssid.isEmpty()) {
-          Serial.println("Empty SSID");
-        } else {
+        if (!ssid.isEmpty()) {
           wifi_ota.saveCredentials(ssid, pass);
           Serial.printf("Saved SSID \"%s\" — rebooting…\n", ssid.c_str());
           delay(300);
@@ -299,6 +335,7 @@ void handleSerial() {
 }
 
 void maybeAutoTimer(float weight_g) {
+  if (standby) return;
   if (!kAutoTimerEnabled) return;
   if (shot_timer.running()) return;
   if (auto_armed && weight_g >= kAutoTimerThresholdG) {
@@ -323,6 +360,7 @@ void setup() {
 
   buzzer.begin();
   buttons.begin();
+  battery.begin();
 
   if (!display.begin()) {
     Serial.println("[warn] OLED init failed — continuing headless");
@@ -336,7 +374,6 @@ void setup() {
 
   ble.begin(handleBleCommand);
 
-  // WiFi after BLE init; SoftAP if no credentials (see serial / OLED).
   wifi_ota.begin([]() { return scale.displayGrams(); });
   wifi_ota.printStatus();
   if (wifi_ota.isAccessPoint()) {
@@ -345,8 +382,8 @@ void setup() {
     setStatus("WiFi OK", 2000);
   }
 
-  buzzer.beep();
-  delay(400);
+  buzzer.bootChime();
+  auto_armed = true;  // boot tare already zeroed platform
   last_notify_ms = millis();
   last_display_ms = millis();
 }
@@ -356,6 +393,7 @@ void loop() {
   buzzer.update();
   ble.update();
   wifi_ota.update();
+  battery.update();
   handleSerial();
 
   BtnEvent ev = buttons.poll();
@@ -363,28 +401,28 @@ void loop() {
 
   const uint32_t now = millis();
 
-  // 10 Hz weight notify + flow + auto-timer
   if (now - last_notify_ms >= kWeightNotifyIntervalMs) {
     last_notify_ms = now;
     const float w = scale.rawGrams();
 
-    // Stability heuristic for CE/CA (optional for Flowlog; uses grams only)
     if (fabsf(w - last_weight_for_stable) > 0.15f) {
       last_weight_change_ms = now;
       last_weight_for_stable = w;
     }
     const bool stable = (now - last_weight_change_ms) > 400;
 
-    pushWeightHistory(w);
-    maybeAutoTimer(w);
+    if (!standby) {
+      pushWeightHistory(w);
+      maybeAutoTimer(w);
+    }
 
     uint8_t mm = 0, ss = 0, ds = 0;
     shot_timer.decentFields(mm, ss, ds);
+    // Keep BLE streaming in standby so apps still get weight if connected
     ble.notifyWeight(w, stable, mm, ss, ds);
   }
 
-  // OLED refresh
-  if (now - last_display_ms >= kDisplayRefreshMs) {
+  if (!standby && now - last_display_ms >= kDisplayRefreshMs) {
     last_display_ms = now;
     DisplayState st;
     st.weight_g = scale.displayGrams();
@@ -397,6 +435,8 @@ void loop() {
     st.scale_ok = scale.isReady();
     st.wifi_label = wifi_ota.modeLabel();
     st.ota_active = wifi_ota.otaInProgress();
+    st.battery_label = battery.label();
+    st.standby = false;
     if (status_msg && now < status_until_ms) {
       st.status = status_msg;
     } else {

@@ -4,11 +4,13 @@ Breadboard espresso scale firmware for **ESP32-S3 Super Mini** + HX711 + SSD1306
 
 Built to work with **[Flowlog](https://github.com/isyourbrainfoss/Flowlog)** via the public **Decent Scale BLE** protocol (device name `Decent Scale`).
 
-## Features (v1.1)
+## Features (v1.2)
 
-- Weight to 0.1 g (HX711 + 2 kg cell)
+- Weight to 0.1 g (HX711 + 2 kg cell) with **auto-tare on boot**
 - Tare + shot timer + flow rate (g/s) on OLED
-- Passive buzzer feedback
+- Softer multi-note buzzer cues
+- **Standby**: long-press Tare → OLED off (wake on any button); BLE power-off → standby
+- Battery / **USB** indicator on OLED (ADC optional for real %)
 - Calibration stored in NVS
 - BLE: Decent Scale API (FFF4 notify, 36F5 write, 10 Hz weight, heartbeat)
 - **Wi‑Fi** with setup AP + status page + **OTA** (ArduinoOTA + browser upload)
@@ -98,9 +100,10 @@ During OTA the OLED shows `OTA...`. Prefer not to pour a shot mid-update.
 
 | Action | Control |
 |--------|---------|
-| Tare | Tare button short press |
-| Start/stop timer | Timer button short press |
-| Reset timer | Timer button long press (~1 s) |
+| Tare | Tare short press |
+| **Standby / wake** | **Tare long press** (~1 s) — OLED off; any button wakes |
+| Start/stop timer | Timer short press |
+| Reset timer | Timer long press (~1 s) |
 | Calibration mode | Hold **both** ~3 s |
 
 Optional auto-start: timer starts when weight rises past 0.5 g after a tare (see `include/config.h`).

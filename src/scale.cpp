@@ -16,7 +16,8 @@ constexpr const char* kNvsFactor = "cal_factor";
 bool Scale::begin() {
   loadcell.begin();
   loadcell.setSamplesInUse(4);
-  loadcell.start(1500, false);  // tare during start for a clean zero
+  // true = tare after stabilize so empty platform boots near 0 g
+  loadcell.start(1500, true);
 
   unsigned long t0 = millis();
   while (!loadcell.update() && millis() - t0 < 3000) {
@@ -28,12 +29,19 @@ bool Scale::begin() {
   }
   loadcell.setCalFactor(cal_factor_);
 
-  // Capture tare offset from the library's internal zero after start-tare.
+  // Second tare after cal factor applied (clean zero with correct scale)
+  loadcell.tareNoDelay();
+  t0 = millis();
+  while (loadcell.getTareStatus() == false && millis() - t0 < 1500) {
+    loadcell.update();
+    delay(1);
+  }
+
   tare_offset_ = 0;
   ready_ = true;
   raw_g_ = 0;
   filtered_g_ = 0;
-  Serial.printf("[scale] ready, cal_factor=%.4f\n", cal_factor_);
+  Serial.printf("[scale] ready (auto-tare), cal_factor=%.4f\n", cal_factor_);
   return true;
 }
 

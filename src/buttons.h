@@ -5,6 +5,7 @@
 enum class BtnEvent : uint8_t {
   None = 0,
   TareShort,
+  TareLong,  // standby toggle
   TimerShort,
   TimerLong,
   BothHeldCal,

@@ -33,11 +33,16 @@ BtnEvent Buttons::poll() {
 
   BtnEvent ev = BtnEvent::None;
 
-  // Tare edge handling
+  // Tare: short on release, long while held (standby)
   if (tare && !tare_down_) {
     tare_down_ = true;
     tare_down_ms_ = now;
     tare_long_consumed_ = false;
+  } else if (tare && tare_down_ && !tare_long_consumed_ && !both_fired_) {
+    if (now - tare_down_ms_ >= kBtnLongPressMs) {
+      tare_long_consumed_ = true;
+      return BtnEvent::TareLong;
+    }
   } else if (!tare && tare_down_) {
     const uint32_t held = now - tare_down_ms_;
     tare_down_ = false;

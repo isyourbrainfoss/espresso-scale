@@ -16,3 +16,6 @@ static constexpr int PIN_BTN_TIMER = 5;
 
 // Passive buzzer
 static constexpr int PIN_BUZZER = 10;
+
+// Optional battery voltage ADC (-1 = USB-only breadboard, no sense wire)
+static constexpr int PIN_BAT_ADC = -1;

@@ -48,7 +48,8 @@ class BleDecent {
 
   // Acks
   void notifyTareAck(uint8_t counter = 0);
-  void notifyLedAck();
+  // battery_byte: 0xFF = USB, else 3–100 percent
+  void notifyLedAck(uint8_t battery_byte = 0xFF);
 
   // Heartbeat enforcement after client opts in via tare/LED byte5=1
   bool heartbeatRequired() const { return heartbeat_required_; }

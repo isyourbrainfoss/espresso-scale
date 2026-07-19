@@ -4,7 +4,7 @@
 
 // --- Product ---
 static constexpr const char* kProductName = "Half Decent Scale";
-static constexpr const char* kFirmwareVersion = "1.1.0";
+static constexpr const char* kFirmwareVersion = "1.2.0";
 
 // BLE advertises as "Decent Scale" so Flowlog and other Decent-compatible
 // apps discover the device without changes.
@@ -47,6 +47,14 @@ static constexpr float kDefaultCalFactor = 1000.0f;
 
 // Half Decent heartbeat: disconnect if opted-in client misses this window.
 static constexpr uint32_t kHeartbeatTimeoutMs = 5000;
+
+// Standby (long-press Tare)
+static constexpr uint32_t kStandbyTareHoldMs = 1000;  // same as long-press
+// In standby: OLED off; wake on any button. WiFi/BLE stay up for OTA/apps.
+
+// Battery sense (only if PIN_BAT_ADC >= 0)
+static constexpr float kBatVoltageDivider = 2.0f;  // Vbat = Vadc * this
+static constexpr float kBatUsbThresholdV = 4.35f;  // above → treat as USB
 
 // Serial
 static constexpr uint32_t kSerialBaud = 115200;

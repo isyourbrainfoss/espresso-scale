@@ -219,9 +219,9 @@ void BleDecent::notifyTareAck(uint8_t counter) {
   sendNotify(pkt, sizeof(pkt));
 }
 
-void BleDecent::notifyLedAck() {
-  // battery FF = USB, firmware 03 = v1.2
-  uint8_t pkt[7] = {0x03, 0x0A, 0x00, 0x00, 0xFF, 0x03, 0x00};
+void BleDecent::notifyLedAck(uint8_t battery_byte) {
+  // firmware 03 = v1.2 packet format
+  uint8_t pkt[7] = {0x03, 0x0A, 0x00, 0x00, battery_byte, 0x03, 0x00};
   pkt[6] = xor6(pkt);
   sendNotify(pkt, sizeof(pkt));
 }
