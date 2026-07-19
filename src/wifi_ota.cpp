@@ -221,25 +221,78 @@ void WifiOta::clearCredentials() {
 bool WifiOta::connectSta(const String& ssid, const String& pass) {
   mode_ = WifiMode::Connecting;
   ssid_ = ssid;
+
+  // ESP32-S3 is 2.4 GHz only — 5 GHz APs with the same SSID are invisible.
+  WiFi.persistent(false);
+  WiFi.disconnect(true, true);
+  delay(100);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(kHostname);
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 2
+  // Prefer full 2.4 GHz scan / best signal among 2.4 GHz BSS.
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+#endif
   WiFi.begin(ssid.c_str(), pass.c_str());
-  Serial.printf("[wifi] connecting to \"%s\"…\n", ssid.c_str());
+  Serial.printf("[wifi] connecting to \"%s\" (2.4 GHz only)…\n", ssid.c_str());
 
   const uint32_t t0 = millis();
+  wl_status_t last = WL_IDLE_STATUS;
   while (WiFi.status() != WL_CONNECTED &&
          millis() - t0 < kWifiConnectTimeoutMs) {
-    delay(50);
+    wl_status_t st = WiFi.status();
+    if (st != last) {
+      last = st;
+      Serial.printf("[wifi] status=%d\n", static_cast<int>(st));
+    }
+    delay(100);
     yield();
   }
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[wifi] STA connect failed");
+    Serial.printf("[wifi] STA connect failed (status=%d). "
+                  "ESP32 only sees 2.4 GHz — is the SSID on 2.4 GHz?\n",
+                  static_cast<int>(WiFi.status()));
     return false;
   }
   mode_ = WifiMode::Station;
-  Serial.printf("[wifi] STA OK %s  RSSI %d\n", WiFi.localIP().toString().c_str(),
-                WiFi.RSSI());
+  Serial.printf("[wifi] STA OK %s  RSSI %d ch=%d\n",
+                WiFi.localIP().toString().c_str(), WiFi.RSSI(), WiFi.channel());
   return true;
+}
+
+void WifiOta::scanNetworks() {
+  Serial.println("[wifi] scanning 2.4 GHz…");
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false);
+  delay(50);
+  const int n = WiFi.scanNetworks(/*async=*/false, /*hidden=*/true);
+  if (n <= 0) {
+    Serial.println("[wifi] no networks found");
+    return;
+  }
+  Serial.printf("[wifi] %d network(s):\n", n);
+  for (int i = 0; i < n; ++i) {
+    Serial.printf("  %2d  ch=%2d  RSSI=%4d  %s  \"%s\"\n", i + 1,
+                  WiFi.channel(i), WiFi.RSSI(i),
+                  (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "open" : "psk ",
+                  WiFi.SSID(i).c_str());
+  }
+  WiFi.scanDelete();
+}
+
+bool WifiOta::tryConnectSaved() {
+  String ssid, pass;
+  if (!loadCredentials(ssid, pass)) {
+    Serial.println("[wifi] no saved credentials");
+    return false;
+  }
+  stopServices();
+  if (connectSta(ssid, pass)) {
+    startServices();
+    return true;
+  }
+  startApPortal();
+  return false;
 }
 
 void WifiOta::startApPortal() {

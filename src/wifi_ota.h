@@ -36,6 +36,8 @@ class WifiOta {
   void printStatus() const;
   bool startSetupAp();  // force SoftAP portal
   void setOtaActive(bool on) { ota_active_ = on; }
+  void scanNetworks();  // print 2.4 GHz scan to serial
+  bool tryConnectSaved();  // re-attempt STA with NVS creds
 
  private:
   WifiMode mode_ = WifiMode::Off;

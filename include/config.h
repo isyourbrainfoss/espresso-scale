@@ -16,7 +16,7 @@ static constexpr const char* kApSsid = "HalfDecent-Setup";
 static constexpr const char* kApPassword = "scale1234";  // min 8 chars
 // Optional password for ArduinoOTA / web OTA (empty = open on LAN)
 static constexpr const char* kOtaPassword = "scaleota";
-static constexpr uint32_t kWifiConnectTimeoutMs = 15000;
+static constexpr uint32_t kWifiConnectTimeoutMs = 25000;
 
 // --- Sampling / UI ---
 static constexpr uint32_t kWeightNotifyHz = 10;

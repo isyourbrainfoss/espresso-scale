@@ -209,6 +209,8 @@ void handleSerial() {
         Serial.println("  wifi set <ssid> <pass>  - save creds & reboot");
         Serial.println("  wifi clear    - wipe WiFi NVS & reboot to AP");
         Serial.println("  wifi ap       - force setup AP now");
+        Serial.println("  wifi scan     - list 2.4 GHz networks (ESP cannot use 5 GHz)");
+        Serial.println("  wifi connect  - retry STA with saved credentials");
         Serial.println("  ip            - print IP address");
       } else if (serial_line.equalsIgnoreCase("tare")) {
         doTare(false);
@@ -238,20 +240,50 @@ void handleSerial() {
       } else if (serial_line.equalsIgnoreCase("wifi ap")) {
         wifi_ota.startSetupAp();
         setStatus("WiFi AP mode", 3000);
+      } else if (serial_line.equalsIgnoreCase("wifi scan")) {
+        wifi_ota.scanNetworks();
+      } else if (serial_line.equalsIgnoreCase("wifi connect")) {
+        setStatus("WiFi connecting", 3000);
+        if (wifi_ota.tryConnectSaved()) {
+          setStatus("WiFi OK", 2000);
+        } else {
+          setStatus("WiFi fail->AP", 3000);
+        }
+        wifi_ota.printStatus();
       } else if (serial_line.startsWith("wifi set ")) {
-        // wifi set MySSID MyPassword (password may contain spaces after first token)
+        // wifi set <ssid> <password>
+        // SSID may be quoted: wifi set "vaifai 2.4" secret
+        // Unquoted: first token = ssid, remainder = password (may contain spaces)
         String rest = serial_line.substring(9);
         rest.trim();
-        int sp = rest.indexOf(' ');
-        if (sp <= 0) {
-          Serial.println("Usage: wifi set <ssid> <password>");
-        } else {
-          String ssid = rest.substring(0, sp);
-          String pass = rest.substring(sp + 1);
-          ssid.trim();
+        String ssid, pass;
+        if (rest.startsWith("\"")) {
+          int endq = rest.indexOf('"', 1);
+          if (endq < 0) {
+            Serial.println("Usage: wifi set \"ssid with spaces\" <password>");
+            serial_line = "";
+            continue;
+          }
+          ssid = rest.substring(1, endq);
+          pass = rest.substring(endq + 1);
           pass.trim();
+        } else {
+          int sp = rest.indexOf(' ');
+          if (sp <= 0) {
+            Serial.println("Usage: wifi set <ssid> <password>");
+            Serial.println("   or: wifi set \"ssid with spaces\" <password>");
+            serial_line = "";
+            continue;
+          }
+          ssid = rest.substring(0, sp);
+          pass = rest.substring(sp + 1);
+          pass.trim();
+        }
+        if (ssid.isEmpty()) {
+          Serial.println("Empty SSID");
+        } else {
           wifi_ota.saveCredentials(ssid, pass);
-          Serial.println("Rebooting to connect…");
+          Serial.printf("Saved SSID \"%s\" — rebooting…\n", ssid.c_str());
           delay(300);
           ESP.restart();
         }
