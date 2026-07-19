@@ -54,6 +54,15 @@ void Display::render(const DisplayState& s) {
     return;
   }
 
+  if (s.ota_active) {
+    u8g2.setFont(u8g2_font_6x12_tr);
+    u8g2.drawStr(40, 12, "OTA...");
+  } else if (s.wifi_label != nullptr && s.wifi_label[0] != '\0') {
+    u8g2.setFont(u8g2_font_5x8_tr);
+    int wl = u8g2.getStrWidth(s.wifi_label);
+    u8g2.drawStr(128 - wl - 2, 8, s.wifi_label);
+  }
+
   // Large weight
   char wbuf[16];
   snprintf(wbuf, sizeof(wbuf), "%0.1f", static_cast<double>(s.weight_g));

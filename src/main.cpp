@@ -9,6 +9,7 @@
 #include "display.h"
 #include "scale.h"
 #include "shot_timer.h"
+#include "wifi_ota.h"
 
 namespace {
 
@@ -18,6 +19,7 @@ Buttons buttons;
 Buzzer buzzer;
 ShotTimer shot_timer;
 BleDecent ble;
+WifiOta wifi_ota;
 
 enum class CalMode : uint8_t { Idle, WaitEmpty, WaitMass };
 CalMode cal_mode = CalMode::Idle;
@@ -203,6 +205,11 @@ void handleSerial() {
         Serial.println("  factor        - print calibration factor");
         Serial.println("  factor <n>    - set calibration factor");
         Serial.println("  weight        - print current weight");
+        Serial.println("  wifi          - WiFi / OTA status");
+        Serial.println("  wifi set <ssid> <pass>  - save creds & reboot");
+        Serial.println("  wifi clear    - wipe WiFi NVS & reboot to AP");
+        Serial.println("  wifi ap       - force setup AP now");
+        Serial.println("  ip            - print IP address");
       } else if (serial_line.equalsIgnoreCase("tare")) {
         doTare(false);
       } else if (serial_line.equalsIgnoreCase("cal empty")) {
@@ -221,6 +228,33 @@ void handleSerial() {
         Serial.printf("raw=%.2f display=%.2f\n",
                       static_cast<double>(scale.rawGrams()),
                       static_cast<double>(scale.displayGrams()));
+      } else if (serial_line.equalsIgnoreCase("wifi") ||
+                 serial_line.equalsIgnoreCase("ip")) {
+        wifi_ota.printStatus();
+      } else if (serial_line.equalsIgnoreCase("wifi clear")) {
+        wifi_ota.clearCredentials();
+        delay(200);
+        ESP.restart();
+      } else if (serial_line.equalsIgnoreCase("wifi ap")) {
+        wifi_ota.startSetupAp();
+        setStatus("WiFi AP mode", 3000);
+      } else if (serial_line.startsWith("wifi set ")) {
+        // wifi set MySSID MyPassword (password may contain spaces after first token)
+        String rest = serial_line.substring(9);
+        rest.trim();
+        int sp = rest.indexOf(' ');
+        if (sp <= 0) {
+          Serial.println("Usage: wifi set <ssid> <password>");
+        } else {
+          String ssid = rest.substring(0, sp);
+          String pass = rest.substring(sp + 1);
+          ssid.trim();
+          pass.trim();
+          wifi_ota.saveCredentials(ssid, pass);
+          Serial.println("Rebooting to connect…");
+          delay(300);
+          ESP.restart();
+        }
       } else {
         Serial.println("Unknown. Type help.");
       }
@@ -270,6 +304,15 @@ void setup() {
 
   ble.begin(handleBleCommand);
 
+  // WiFi after BLE init; SoftAP if no credentials (see serial / OLED).
+  wifi_ota.begin([]() { return scale.displayGrams(); });
+  wifi_ota.printStatus();
+  if (wifi_ota.isAccessPoint()) {
+    setStatus("WiFi setup AP", 4000);
+  } else if (wifi_ota.isStation()) {
+    setStatus("WiFi OK", 2000);
+  }
+
   buzzer.beep();
   delay(400);
   last_notify_ms = millis();
@@ -280,6 +323,7 @@ void loop() {
   scale.update();
   buzzer.update();
   ble.update();
+  wifi_ota.update();
   handleSerial();
 
   BtnEvent ev = buttons.poll();
@@ -319,12 +363,16 @@ void loop() {
     st.ble_advertising = ble.isAdvertising();
     st.app_mode = ble.appMode() || ble.isConnected();
     st.scale_ok = scale.isReady();
+    st.wifi_label = wifi_ota.modeLabel();
+    st.ota_active = wifi_ota.otaInProgress();
     if (status_msg && now < status_until_ms) {
       st.status = status_msg;
     } else {
       status_msg = nullptr;
       if (cal_mode == CalMode::WaitMass) {
         st.status = "Cal: add mass";
+      } else if (wifi_ota.otaInProgress()) {
+        st.status = "OTA updating";
       }
     }
     display.render(st);

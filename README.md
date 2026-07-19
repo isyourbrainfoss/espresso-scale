@@ -4,13 +4,14 @@ Breadboard espresso scale firmware for **ESP32-S3 Super Mini** + HX711 + SSD1306
 
 Built to work with **[Flowlog](https://github.com/isyourbrainfoss/Flowlog)** via the public **Decent Scale BLE** protocol (device name `Decent Scale`).
 
-## Features (v1)
+## Features (v1.1)
 
 - Weight to 0.1 g (HX711 + 2 kg cell)
 - Tare + shot timer + flow rate (g/s) on OLED
 - Passive buzzer feedback
 - Calibration stored in NVS
 - BLE: Decent Scale API (FFF4 notify, 36F5 write, 10 Hz weight, heartbeat)
+- **Wi‑Fi** with setup AP + status page + **OTA** (ArduinoOTA + browser upload)
 
 ## Hardware
 
@@ -35,6 +36,63 @@ pio device monitor -b 115200
 ```
 
 ESP32-S3 Super Mini: hold **BOOT** if upload fails, then reset after flash. USB serial uses CDC (`ARDUINO_USB_CDC_ON_BOOT`).
+
+## Wi‑Fi & wireless OTA
+
+After the first USB flash, the scale can join your LAN and accept updates without a cable.
+
+### First-time Wi‑Fi setup
+
+If no credentials are stored (or join fails), the scale starts a setup access point:
+
+| | |
+|--|--|
+| SSID | `HalfDecent-Setup` |
+| Password | `scale1234` |
+| Portal | http://192.168.4.1/ (or `/wifi`) |
+
+1. Join `HalfDecent-Setup` from your phone/laptop.
+2. Open the portal and enter your home Wi‑Fi SSID + password.
+3. The scale reboots, joins STA, and serves **http://half-decent.local/** (or its DHCP IP).
+
+**Serial alternative** (USB monitor):
+
+```text
+wifi set MySSID MyPassword
+wifi              # status / IP
+wifi clear        # wipe creds → setup AP on reboot
+wifi ap           # force setup AP now
+```
+
+### Status page
+
+On the LAN: **http://half-decent.local/** (or `http://<ip>/`)
+
+- Live weight snapshot  
+- Links to **Wi‑Fi setup** and **OTA update**  
+
+OLED shows a small `WiFi` or `AP` label when wireless is up.
+
+### OTA update (PlatformIO)
+
+Password is `scaleota` (change in `include/config.h` → `kOtaPassword`).
+
+```bash
+# Discover IP from serial ("wifi") or the status page, then:
+pio run -t upload -e ota --upload-port 192.168.1.50
+
+# If mDNS works on your OS:
+pio run -t upload -e ota --upload-port half-decent.local
+```
+
+### OTA update (browser)
+
+1. Build: `pio run`
+2. Open **http://half-decent.local/update**
+3. Upload `.pio/build/esp32-s3-super-mini/firmware.bin`
+4. Wait for reboot
+
+During OTA the OLED shows `OTA...`. Prefer not to pour a shot mid-update.
 
 ## Buttons
 
@@ -87,8 +145,8 @@ Weight is a 10-byte v1.2 packet; grams = signed big-endian int16 at bytes 2–3,
 
 ```
 include/pins.h config.h
-src/main.cpp scale.* display.* buttons.* buzzer.* shot_timer.* ble_decent.*
-platformio.ini
+src/main.cpp scale.* display.* buttons.* buzzer.* shot_timer.* ble_decent.* wifi_ota.*
+platformio.ini   # envs: esp32-s3-super-mini (USB), ota (espota)
 ```
 
 ## License

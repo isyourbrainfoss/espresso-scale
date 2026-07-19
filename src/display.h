@@ -12,6 +12,9 @@ struct DisplayState {
   bool app_mode = false;  // LED-on / app connected stream active
   const char* status = nullptr;  // optional one-line status (cal, error)
   bool scale_ok = true;
+  // Optional short WiFi label (e.g. "WiFi" / "AP") — shown top-right when set
+  const char* wifi_label = nullptr;
+  bool ota_active = false;
 };
 
 class Display {

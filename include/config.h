@@ -4,11 +4,19 @@
 
 // --- Product ---
 static constexpr const char* kProductName = "Half Decent Scale";
-static constexpr const char* kFirmwareVersion = "1.0.0";
+static constexpr const char* kFirmwareVersion = "1.1.0";
 
 // BLE advertises as "Decent Scale" so Flowlog and other Decent-compatible
 // apps discover the device without changes.
 static constexpr const char* kBleDeviceName = "Decent Scale";
+
+// WiFi / OTA
+static constexpr const char* kHostname = "half-decent";
+static constexpr const char* kApSsid = "HalfDecent-Setup";
+static constexpr const char* kApPassword = "scale1234";  // min 8 chars
+// Optional password for ArduinoOTA / web OTA (empty = open on LAN)
+static constexpr const char* kOtaPassword = "scaleota";
+static constexpr uint32_t kWifiConnectTimeoutMs = 15000;
 
 // --- Sampling / UI ---
 static constexpr uint32_t kWeightNotifyHz = 10;
