@@ -33,12 +33,14 @@ BtnEvent Buttons::poll() {
 
   BtnEvent ev = BtnEvent::None;
 
-  // Tare: short on release, long while held (standby)
+  // Tare: short on release, long while held (standby).
+  // Do NOT treat long-press while Timer is also held — that path is "both → cal".
   if (tare && !tare_down_) {
     tare_down_ = true;
     tare_down_ms_ = now;
     tare_long_consumed_ = false;
-  } else if (tare && tare_down_ && !tare_long_consumed_ && !both_fired_) {
+  } else if (tare && !timer && tare_down_ && !tare_long_consumed_ &&
+             !both_fired_) {
     if (now - tare_down_ms_ >= kBtnLongPressMs) {
       tare_long_consumed_ = true;
       return BtnEvent::TareLong;
@@ -52,12 +54,13 @@ BtnEvent Buttons::poll() {
     }
   }
 
-  // Timer edge handling
+  // Timer: same rule — long only when Tare is not held
   if (timer && !timer_down_) {
     timer_down_ = true;
     timer_down_ms_ = now;
     timer_long_consumed_ = false;
-  } else if (timer && timer_down_ && !timer_long_consumed_ && !both_fired_) {
+  } else if (timer && !tare && timer_down_ && !timer_long_consumed_ &&
+             !both_fired_) {
     if (now - timer_down_ms_ >= kBtnLongPressMs) {
       timer_long_consumed_ = true;
       return BtnEvent::TimerLong;

@@ -4,7 +4,7 @@
 
 // --- Product ---
 static constexpr const char* kProductName = "Half Decent Scale";
-static constexpr const char* kFirmwareVersion = "1.2.0";
+static constexpr const char* kFirmwareVersion = "1.2.1";
 
 // BLE advertises as "Decent Scale" so Flowlog and other Decent-compatible
 // apps discover the device without changes.
