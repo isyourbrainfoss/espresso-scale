@@ -76,6 +76,22 @@ void BleDecent::startAdvertising() {
   advertising_ = true;
 }
 
+void BleDecent::end() {
+  if (server) {
+    NimBLEDevice::getAdvertising()->stop();
+  }
+  NimBLEDevice::deinit(true);
+  connected_ = false;
+  advertising_ = false;
+  app_mode_ = false;
+  notify_enabled_ = false;
+  g_ble = nullptr;
+  server = nullptr;
+  notify_char = nullptr;
+  write_char = nullptr;
+  Serial.println("[ble] stopped");
+}
+
 void BleDecent::onConnect() {
   connected_ = true;
   advertising_ = false;

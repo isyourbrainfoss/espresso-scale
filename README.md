@@ -9,7 +9,7 @@ Built to work with **[Flowlog](https://github.com/isyourbrainfoss/Flowlog)** via
 - Weight to 0.1 g (HX711 + 2 kg cell) with **auto-tare on boot**
 - Tare + shot timer + flow rate (g/s) on OLED
 - Softer multi-note buzzer cues
-- **Standby**: long-press Tare → OLED off (wake on any button); BLE power-off → standby
+- **Deep sleep**: long-press Tare → radios/OLED/HX711 off; **touch Tare or Timer** to wake (full reboot)
 - Battery / **USB** indicator on OLED (ADC optional for real %)
 - Calibration stored in NVS
 - BLE: Decent Scale API (FFF4 notify, 36F5 write, 10 Hz weight, heartbeat)
@@ -101,7 +101,8 @@ During OTA the OLED shows `OTA...`. Prefer not to pour a shot mid-update.
 | Action | Control |
 |--------|---------|
 | Tare | Tare short press |
-| **Standby / wake** | **Tare long press** (~1 s) — OLED off; any button wakes |
+| **Deep sleep** | **Tare long press** (~1 s) — OLED shows Sleep… then powers down |
+| **Wake** | Touch **Tare** or **Timer** (full cold start + auto-tare + Wi‑Fi) |
 | Start/stop timer | Timer short press |
 | Reset timer | Timer long press (~1 s) |
 | Calibration mode | Hold **both** ~3 s |

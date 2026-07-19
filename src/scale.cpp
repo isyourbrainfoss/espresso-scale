@@ -69,6 +69,12 @@ void Scale::tare() {
   Serial.println("[scale] tared");
 }
 
+void Scale::powerDown() {
+  if (!ready_) return;
+  loadcell.powerDown();
+  Serial.println("[scale] HX711 power down");
+}
+
 void Scale::setCalFactor(float factor, bool save) {
   if (factor == 0.0f || isnan(factor) || isinf(factor)) return;
   cal_factor_ = factor;

@@ -28,6 +28,7 @@ class BleDecent {
   using CommandHandler = std::function<void(const DecentCommand&)>;
 
   bool begin(CommandHandler on_command);
+  void end();  // stop BLE before deep sleep
   void update();
 
   bool isConnected() const { return connected_; }

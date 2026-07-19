@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <cmath>
 #include <cstring>
+#include <esp_sleep.h>
 
 #include "battery.h"
 #include "ble_decent.h"
@@ -8,6 +9,7 @@
 #include "buzzer.h"
 #include "config.h"
 #include "display.h"
+#include "pins.h"
 #include "scale.h"
 #include "shot_timer.h"
 #include "wifi_ota.h"
@@ -28,8 +30,6 @@ CalMode cal_mode = CalMode::Idle;
 float cal_mass_g = kDefaultCalMassG;
 const char* status_msg = nullptr;
 uint32_t status_until_ms = 0;
-
-bool standby = false;
 
 float weight_hist[kFlowRateWindowSamples] = {};
 int weight_hist_idx = 0;
@@ -72,27 +72,56 @@ void pushWeightHistory(float g) {
   }
 }
 
-void enterStandby() {
-  if (standby) return;
-  standby = true;
+// Full deep sleep: radios off, OLED off, HX711 PD. Wake on Tare or Timer HIGH.
+void enterDeepSleep() {
+  Serial.println("[power] deep sleep — touch Tare or Timer to wake");
   shot_timer.stop();
-  display.setPowerSave(true);
   buzzer.sleepChime();
-  setStatus(nullptr, 0);
-  Serial.println("[power] standby (hold Tare or any press to wake)");
-}
+  // Let chime finish
+  for (int i = 0; i < 80; ++i) {
+    buzzer.update();
+    delay(10);
+  }
 
-void leaveStandby() {
-  if (!standby) return;
-  standby = false;
+  DisplayState st{};
+  st.status = "Sleep...";
+  st.scale_ok = true;
   display.setPowerSave(false);
-  buzzer.wakeChime();
-  setStatus("Wake", 1200);
-  Serial.println("[power] wake");
+  display.render(st);
+  delay(400);
+  display.setPowerSave(true);
+
+  scale.powerDown();
+  wifi_ota.end();
+  ble.end();
+  btStop();
+
+  // Wait until fingers off so we don't re-wake immediately
+  pinMode(PIN_BTN_TARE, INPUT);
+  pinMode(PIN_BTN_TIMER, INPUT);
+  uint32_t t0 = millis();
+  while (millis() - t0 < 5000) {
+    if (digitalRead(PIN_BTN_TARE) == LOW && digitalRead(PIN_BTN_TIMER) == LOW) {
+      delay(50);
+      if (digitalRead(PIN_BTN_TARE) == LOW && digitalRead(PIN_BTN_TIMER) == LOW) {
+        break;
+      }
+    }
+    delay(20);
+  }
+  delay(100);
+
+  // ESP32-S3: ext1 ANY_HIGH on RTC GPIOs 4 & 5 (TTP223 active high)
+  const uint64_t wake_mask =
+      (1ULL << PIN_BTN_TARE) | (1ULL << PIN_BTN_TIMER);
+  esp_sleep_enable_ext1_wakeup(wake_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
+
+  Serial.flush();
+  esp_deep_sleep_start();
+  // never returns
 }
 
 void doTare(bool from_ble) {
-  if (standby) leaveStandby();
   scale.tare();
   buzzer.tareChime();
   auto_armed = true;
@@ -105,19 +134,16 @@ void doTare(bool from_ble) {
 }
 
 void doTimerStart() {
-  if (standby) leaveStandby();
   shot_timer.start();
   buzzer.timerStartChime();
 }
 
 void doTimerStop() {
-  if (standby) leaveStandby();
   shot_timer.stop();
   buzzer.timerStopChime();
 }
 
 void doTimerReset() {
-  if (standby) leaveStandby();
   shot_timer.reset();
   buzzer.timerResetChime();
   auto_armed = true;
@@ -130,7 +156,6 @@ void handleBleCommand(const DecentCommand& cmd) {
       ble.notifyTareAck();
       break;
     case DecentCommand::Type::LedOn:
-      leaveStandby();
       ble.setAppMode(true);
       ble.notifyLedAck(battery.decentBatteryByte());
       buzzer.tareChime();
@@ -139,9 +164,8 @@ void handleBleCommand(const DecentCommand& cmd) {
       ble.notifyLedAck(battery.decentBatteryByte());
       break;
     case DecentCommand::Type::PowerOff:
-      // Soft standby instead of hard power-off (USB breadboard)
-      enterStandby();
       ble.notifyLedAck(battery.decentBatteryByte());
+      enterDeepSleep();
       break;
     case DecentCommand::Type::TimerStart:
       doTimerStart();
@@ -160,7 +184,6 @@ void handleBleCommand(const DecentCommand& cmd) {
 }
 
 void enterCalMode() {
-  if (standby) leaveStandby();
   cal_mode = CalMode::WaitEmpty;
   scale.startCalEmpty();
   setStatus("Cal: empty OK", 3000);
@@ -183,18 +206,6 @@ void finishCal(float mass) {
 }
 
 void handleButton(BtnEvent ev) {
-  // Any interaction wakes from standby (except we handle TareLong as toggle)
-  if (standby) {
-    if (ev == BtnEvent::TareLong) {
-      leaveStandby();
-      return;
-    }
-    if (ev != BtnEvent::None) {
-      leaveStandby();
-      // Fall through so short press still does its action after wake
-    }
-  }
-
   switch (ev) {
     case BtnEvent::TareShort:
       if (cal_mode == CalMode::WaitMass) {
@@ -205,12 +216,8 @@ void handleButton(BtnEvent ev) {
       ble.notifyButton(1, 1);
       break;
     case BtnEvent::TareLong:
-      if (standby) {
-        leaveStandby();
-      } else {
-        enterStandby();
-      }
       ble.notifyButton(1, 2);
+      enterDeepSleep();
       break;
     case BtnEvent::TimerShort:
       if (shot_timer.running()) {
@@ -245,14 +252,13 @@ void handleSerial() {
       if (serial_line.equalsIgnoreCase("help")) {
         Serial.println("Commands:");
         Serial.println("  help / tare / weight / factor / cal …");
-        Serial.println("  sleep / wake / battery");
+        Serial.println("  sleep         - deep sleep (touch button to wake)");
+        Serial.println("  battery");
         Serial.println("  wifi / wifi set / wifi scan / wifi connect …");
       } else if (serial_line.equalsIgnoreCase("tare")) {
         doTare(false);
       } else if (serial_line.equalsIgnoreCase("sleep")) {
-        enterStandby();
-      } else if (serial_line.equalsIgnoreCase("wake")) {
-        leaveStandby();
+        enterDeepSleep();
       } else if (serial_line.equalsIgnoreCase("battery")) {
         Serial.printf("battery %s (%d%%) usb=%d\n", battery.label(),
                       battery.percent(), battery.isUsb() ? 1 : 0);
@@ -335,7 +341,6 @@ void handleSerial() {
 }
 
 void maybeAutoTimer(float weight_g) {
-  if (standby) return;
   if (!kAutoTimerEnabled) return;
   if (shot_timer.running()) return;
   if (auto_armed && weight_g >= kAutoTimerThresholdG) {
@@ -349,6 +354,20 @@ void maybeAutoTimer(float weight_g) {
   }
 }
 
+void logWakeupCause() {
+  switch (esp_sleep_get_wakeup_cause()) {
+    case ESP_SLEEP_WAKEUP_EXT0:
+    case ESP_SLEEP_WAKEUP_EXT1:
+      Serial.println("[power] woke from deep sleep (button)");
+      break;
+    case ESP_SLEEP_WAKEUP_TIMER:
+      Serial.println("[power] woke from timer");
+      break;
+    default:
+      break;
+  }
+}
+
 }  // namespace
 
 void setup() {
@@ -356,7 +375,9 @@ void setup() {
   delay(300);
   Serial.println();
   Serial.printf("=== %s v%s ===\n", kProductName, kFirmwareVersion);
+  logWakeupCause();
   Serial.println("Type 'help' for serial commands.");
+  Serial.println("Long-press Tare = deep sleep; touch Tare/Timer to wake.");
 
   buzzer.begin();
   buttons.begin();
@@ -411,18 +432,15 @@ void loop() {
     }
     const bool stable = (now - last_weight_change_ms) > 400;
 
-    if (!standby) {
-      pushWeightHistory(w);
-      maybeAutoTimer(w);
-    }
+    pushWeightHistory(w);
+    maybeAutoTimer(w);
 
     uint8_t mm = 0, ss = 0, ds = 0;
     shot_timer.decentFields(mm, ss, ds);
-    // Keep BLE streaming in standby so apps still get weight if connected
     ble.notifyWeight(w, stable, mm, ss, ds);
   }
 
-  if (!standby && now - last_display_ms >= kDisplayRefreshMs) {
+  if (now - last_display_ms >= kDisplayRefreshMs) {
     last_display_ms = now;
     DisplayState st;
     st.weight_g = scale.displayGrams();

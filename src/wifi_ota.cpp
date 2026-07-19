@@ -362,6 +362,15 @@ void WifiOta::startServices() {
   services_started_ = true;
 }
 
+void WifiOta::end() {
+  stopServices();
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_OFF);
+  mode_ = WifiMode::Off;
+  g_wifi = nullptr;
+  Serial.println("[wifi] off");
+}
+
 bool WifiOta::begin(WeightFn weight_fn) {
   weight_fn_ = std::move(weight_fn);
   g_wifi = this;

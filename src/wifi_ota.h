@@ -19,6 +19,7 @@ class WifiOta {
   using WeightFn = std::function<float()>;
 
   bool begin(WeightFn weight_fn = nullptr);
+  void end();  // WiFi off before deep sleep
   void update();
 
   WifiMode mode() const { return mode_; }

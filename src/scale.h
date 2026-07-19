@@ -19,6 +19,7 @@ class Scale {
   void clearNewSample() { new_sample_ = false; }
 
   void tare();
+  void powerDown();  // HX711 low-power before deep sleep
   float calFactor() const { return cal_factor_; }
   void setCalFactor(float factor, bool save = true);
 
