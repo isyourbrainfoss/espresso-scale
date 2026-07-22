@@ -4,7 +4,7 @@
 
 // --- Product ---
 static constexpr const char* kProductName = "Flowlog Scale";
-static constexpr const char* kFirmwareVersion = "1.4.0";
+static constexpr const char* kFirmwareVersion = "1.4.1";
 
 // BLE still advertises as "Decent Scale" so Flowlog's existing pairing
 // (Decent-compatible FFF0/FFF4/36F5) discovers the device without app changes.

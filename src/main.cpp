@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <cmath>
 #include <cstring>
+#include <driver/gpio.h>
 #include <esp_sleep.h>
 
 #include "battery.h"
@@ -72,9 +73,32 @@ void pushWeightHistory(float g) {
   }
 }
 
+// Quiesce Super Mini onboard LED / leftover GPIO drive before deep sleep.
+// Does not control LEDs on an external BMS (those are often charge indicators).
+void boardLedsOff() {
+  // GPIO48: WS2812 RGB on many S3 Super Mini boards — hold low + disable.
+  pinMode(PIN_BOARD_RGB, OUTPUT);
+  digitalWrite(PIN_BOARD_RGB, LOW);
+  // Send a few zero bits so a WS2812 latches “off” if it was left on by ROM.
+  for (int i = 0; i < 24 * 3; ++i) {
+    digitalWrite(PIN_BOARD_RGB, LOW);
+    delayMicroseconds(1);
+  }
+  gpio_hold_en((gpio_num_t)PIN_BOARD_RGB);
+
+  // Buzzer pin low (avoid phantom drive).
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW);
+
+  // I2C bus idle-high via pull-ups only — release MCU drive after OLED power-save.
+  pinMode(PIN_OLED_SDA, INPUT);
+  pinMode(PIN_OLED_SCL, INPUT);
+}
+
 // Full deep sleep: radios off, OLED off, HX711 PD. Wake on Tare or Timer HIGH.
 void enterDeepSleep() {
   Serial.println("[power] deep sleep — touch Tare or Timer to wake");
+  Serial.println("[power] note: red/blue on a BMS module often stay on with battery");
   shot_timer.stop();
   buzzer.sleepChime();
   // Let chime finish
@@ -95,6 +119,7 @@ void enterDeepSleep() {
   wifi_ota.end();
   ble.end();
   btStop();
+  boardLedsOff();
 
   // Wait until fingers off so we don't re-wake immediately
   pinMode(PIN_BTN_TARE, INPUT);
@@ -115,6 +140,9 @@ void enterDeepSleep() {
   const uint64_t wake_mask =
       (1ULL << PIN_BTN_TARE) | (1ULL << PIN_BTN_TIMER);
   esp_sleep_enable_ext1_wakeup(wake_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
+
+  // Keep RGB pin held through deep sleep so it does not float high.
+  gpio_deep_sleep_hold_en();
 
   Serial.flush();
   esp_deep_sleep_start();
@@ -373,6 +401,10 @@ void logWakeupCause() {
 void setup() {
   Serial.begin(kSerialBaud);
   delay(300);
+  // Release any GPIO holds left from previous deep sleep (e.g. RGB pin).
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis((gpio_num_t)PIN_BOARD_RGB);
+
   Serial.println();
   Serial.printf("=== %s v%s ===\n", kProductName, kFirmwareVersion);
   logWakeupCause();
