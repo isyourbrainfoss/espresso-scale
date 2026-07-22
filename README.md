@@ -1,19 +1,20 @@
-# Half Decent Espresso Scale
+# Flowlog Scale (espresso-scale)
 
 Breadboard espresso scale firmware for **ESP32-S3 Super Mini** + HX711 + SSD1306.
 
-Built to work with **[Flowlog](https://github.com/isyourbrainfoss/Flowlog)** via the public **Decent Scale BLE** protocol (device name `Decent Scale`).
+Built as the **companion scale for [Flowlog](https://github.com/isyourbrainfoss/Flowlog)** using the public **Decent Scale BLE** protocol (device still advertises as `Decent Scale` so pairing stays unchanged).
 
-## Features (v1.2)
+## Features (v1.4)
 
 - Weight to 0.1 g (HX711 + 2 kg cell) with **auto-tare on boot**
-- Tare + shot timer + flow rate (g/s) on OLED
+- **OLED**: large weight, **cup fill bar** toward target (default 36 g) with **warn mark** (32 g → “WIND BACK”)
+- Flow rate (g/s); on-scale auto shot-timer **disabled** (Flowlog owns timing)
+- BLE weight stream whenever a phone is connected (not only after LED-on)
 - Softer multi-note buzzer cues
-- **Deep sleep**: long-press Tare → radios/OLED/HX711 off; **touch Tare or Timer** to wake (full reboot)
-- Battery / **USB** indicator on OLED (ADC optional for real %)
-- Calibration stored in NVS
+- **Deep sleep**: long-press Tare → radios/OLED/HX711 off; **touch Tare or Timer** to wake
+- Battery / **USB** indicator; calibration in NVS
 - BLE: Decent Scale API (FFF4 notify, 36F5 write, 10 Hz weight, heartbeat)
-- **Wi‑Fi** with setup AP + status page + **OTA** (ArduinoOTA + browser upload)
+- **Wi‑Fi** setup AP + status page + **OTA**
 
 ## Hardware
 

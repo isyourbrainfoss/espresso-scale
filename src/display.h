@@ -16,6 +16,10 @@ struct DisplayState {
   bool ota_active = false;
   const char* battery_label = nullptr;  // "USB" or "87%"
   bool standby = false;
+  // Flowlog-style cup target (fill bar on OLED).
+  float target_yield_g = 36.0f;
+  float warn_at_g = 32.0f;
+  bool near_target = false;
 };
 
 class Display {

@@ -34,8 +34,8 @@ void Display::showSplash() {
   if (!ready_ || power_save_) return;
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x12_tr);
-  u8g2.drawStr(8, 20, "Half Decent");
-  u8g2.drawStr(20, 36, "Espresso Scale");
+  u8g2.drawStr(20, 20, "Flowlog");
+  u8g2.drawStr(28, 36, "Scale");
   u8g2.setFont(u8g2_font_5x8_tr);
   u8g2.drawStr(36, 54, kFirmwareVersion);
   u8g2.sendBuffer();
@@ -74,40 +74,57 @@ void Display::render(const DisplayState& s) {
     u8g2.drawStr(128 - wl - 2, 8, s.wifi_label);
   }
 
-  // Large weight
+  // Large weight (primary Flowlog readout)
   char wbuf[16];
   snprintf(wbuf, sizeof(wbuf), "%0.1f", static_cast<double>(s.weight_g));
   u8g2.setFont(u8g2_font_logisoso24_tr);
   int ww = u8g2.getStrWidth(wbuf);
-  u8g2.drawStr(2, 34, wbuf);
+  u8g2.drawStr(2, 30, wbuf);
   u8g2.setFont(u8g2_font_6x12_tr);
-  u8g2.drawStr(2 + ww + 2, 32, "g");
+  u8g2.drawStr(2 + ww + 2, 28, "g");
 
-  // Flow rate
+  // Target label e.g. /36
+  char tlabel[20];
+  snprintf(tlabel, sizeof(tlabel), "/%0.0f", static_cast<double>(s.target_yield_g));
+  u8g2.drawStr(2 + ww + 14, 28, tlabel);
+
+  // Cup fill bar (0 → target) with warn mark — mirrors Flowlog Live bar
+  const int barX = 2;
+  const int barY = 36;
+  const int barW = 124;
+  const int barH = 8;
+  u8g2.drawFrame(barX, barY, barW, barH);
+  float target = s.target_yield_g > 1.0f ? s.target_yield_g : 36.0f;
+  float progress = s.weight_g / target;
+  if (progress < 0) progress = 0;
+  if (progress > 1) progress = 1;
+  int fillW = static_cast<int>(progress * (barW - 2));
+  if (fillW > 0) {
+    u8g2.drawBox(barX + 1, barY + 1, fillW, barH - 2);
+  }
+  float warn = s.warn_at_g;
+  if (warn > 0 && warn < target) {
+    int wx = barX + static_cast<int>((warn / target) * barW);
+    u8g2.drawVLine(wx, barY - 1, barH + 2);
+  }
+
+  // Flow + link status (timer is secondary for Flowlog use)
   char fbuf[16];
-  snprintf(fbuf, sizeof(fbuf), "%0.2f g/s", static_cast<double>(s.flow_g_s));
-  u8g2.setFont(u8g2_font_6x12_tr);
-  u8g2.drawStr(2, 48, fbuf);
+  snprintf(fbuf, sizeof(fbuf), "%0.1f g/s", static_cast<double>(s.flow_g_s));
+  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.drawStr(2, 54, fbuf);
 
-  // Timer
-  uint32_t total_s = s.timer_ms / 1000;
-  uint32_t mm = total_s / 60;
-  uint32_t ss = total_s % 60;
-  char tbuf[12];
-  snprintf(tbuf, sizeof(tbuf), "%lu:%02lu", static_cast<unsigned long>(mm),
-           static_cast<unsigned long>(ss));
-  if (s.timer_running) {
-    u8g2.drawStr(2, 62, tbuf);
-    u8g2.drawStr(40, 62, ">");
-  } else {
-    u8g2.drawStr(2, 62, tbuf);
-  }
-
-  if (s.app_mode || s.ble_connected) {
-    u8g2.drawStr(90, 62, "APP");
+  if (s.near_target) {
+    u8g2.setFont(u8g2_font_6x12_tr);
+    u8g2.drawStr(50, 54, "WIND BACK");
+  } else if (s.app_mode || s.ble_connected) {
+    u8g2.drawStr(90, 54, "FL");
   } else if (s.ble_advertising) {
-    u8g2.drawStr(90, 62, "BLE");
+    u8g2.drawStr(90, 54, "BLE");
   }
+
+  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.drawStr(2, 63, "Flowlog scale");
 
   u8g2.sendBuffer();
 }

@@ -455,6 +455,10 @@ void loop() {
     st.ota_active = wifi_ota.otaInProgress();
     st.battery_label = battery.label();
     st.standby = false;
+    st.target_yield_g = kDefaultTargetYieldG;
+    st.warn_at_g = kDefaultYieldWarnG;
+    st.near_target = st.weight_g >= kDefaultYieldWarnG &&
+                     st.weight_g < kDefaultTargetYieldG + 2.0f;
     if (status_msg && now < status_until_ms) {
       st.status = status_msg;
     } else {

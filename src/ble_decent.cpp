@@ -199,8 +199,10 @@ bool BleDecent::sendNotify(const uint8_t* data, size_t len) {
 
 void BleDecent::notifyWeight(float weight_g, bool is_stable, uint8_t minutes,
                              uint8_t seconds, uint8_t deciseconds) {
-  // Only stream after app has started the session (LED on / tare with stream).
-  if (!app_mode_) return;
+  // Stream whenever a BLE client is connected. Flowlog is the primary host;
+  // requiring app_mode (LED-on) caused silent weight freezes when the app
+  // stayed "connected" after heartbeat/LED state drifted.
+  if (!connected_ || !notify_enabled_) return;
 
   int16_t w10 = static_cast<int16_t>(lroundf(weight_g * 10.0f));
   // Clamp to int16
