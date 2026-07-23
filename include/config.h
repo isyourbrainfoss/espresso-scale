@@ -4,7 +4,7 @@
 
 // --- Product ---
 static constexpr const char* kProductName = "Flowlog Scale";
-static constexpr const char* kFirmwareVersion = "1.4.1";
+static constexpr const char* kFirmwareVersion = "1.4.2";
 
 // BLE still advertises as "Decent Scale" so Flowlog's existing pairing
 // (Decent-compatible FFF0/FFF4/36F5) discovers the device without app changes.
@@ -49,8 +49,9 @@ static constexpr float kDefaultCalMassG = 100.0f;
 // Fallback factor if NVS empty (raw counts per gram). Tune after first cal.
 static constexpr float kDefaultCalFactor = 1000.0f;
 
-// Half Decent heartbeat: disconnect if opted-in client misses this window.
-static constexpr uint32_t kHeartbeatTimeoutMs = 5000;
+// Heartbeat: disconnect only if client opted in and goes silent.
+// 15 s gives Flowlog headroom (app sends every 2 s) and avoids mid-brew drops.
+static constexpr uint32_t kHeartbeatTimeoutMs = 15000;
 
 // Deep sleep (long-press Tare): ~µA–mA class draw; wake on Tare or Timer touch.
 // Soft OLED-only standby is no longer used.
