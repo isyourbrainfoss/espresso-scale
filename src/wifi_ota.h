@@ -17,8 +17,13 @@ class WifiOta {
  public:
   // Optional: latest weight for status page (set each notify tick).
   using WeightFn = std::function<float()>;
+  // Optional: last shot JSON for GET /shot.json (empty when none).
+  using ShotJsonFn = std::function<String()>;
+  // Optional: true when a standalone/phone shot is available for export.
+  using HasShotFn = std::function<bool()>;
 
-  bool begin(WeightFn weight_fn = nullptr);
+  bool begin(WeightFn weight_fn = nullptr, ShotJsonFn shot_json_fn = nullptr,
+             HasShotFn has_shot_fn = nullptr);
   void end();  // WiFi off before deep sleep
   void update();
 
@@ -40,10 +45,20 @@ class WifiOta {
   void scanNetworks();  // print 2.4 GHz scan to serial
   bool tryConnectSaved();  // re-attempt STA with NVS creds
 
+  // Optional Nextcloud WebDAV: PUT last_shot.json after a brew.
+  bool saveNextcloud(const String& base_url, const String& user,
+                     const String& pass, const String& remote_path);
+  void clearNextcloud();
+  bool hasNextcloud() const;
+  // Best-effort upload of current shot JSON. Returns true on HTTP 2xx.
+  bool pushShotToNextcloud(const String& json);
+
  private:
   WifiMode mode_ = WifiMode::Off;
   bool ota_active_ = false;
   WeightFn weight_fn_;
+  ShotJsonFn shot_json_fn_;
+  HasShotFn has_shot_fn_;
   String ssid_;
   uint32_t last_reconnect_ms_ = 0;
 

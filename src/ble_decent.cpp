@@ -167,6 +167,22 @@ void BleDecent::onWrite(const uint8_t* data, size_t len) {
       cmd.type = DecentCommand::Type::TimerReset;
     else
       return;
+  } else if (type == 0xF0) {
+    // Flowlog → scale: live pressure (mbar big-endian in d0,d1)
+    cmd.type = DecentCommand::Type::PhonePressure;
+    cmd.pressure_mbar = static_cast<int16_t>((d0 << 8) | d1);
+  } else if (type == 0xF1) {
+    cmd.type = DecentCommand::Type::PhoneBrewStart;
+  } else if (type == 0xF2) {
+    cmd.type = DecentCommand::Type::PhoneBrewEnd;
+  } else if (type == 0xF3) {
+    // Flowlog → scale display config:
+    // d0 = target yield g, d1 = warn g, d2 = P min bar, d3 = P max bar
+    cmd.type = DecentCommand::Type::ScaleDisplayConfig;
+    cmd.cfg_target_g = d0;
+    cmd.cfg_warn_g = d1;
+    cmd.cfg_p_min = d2;
+    cmd.cfg_p_max = d3;
   } else {
     return;
   }

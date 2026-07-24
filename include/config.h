@@ -4,7 +4,7 @@
 
 // --- Product ---
 static constexpr const char* kProductName = "Flowlog Scale";
-static constexpr const char* kFirmwareVersion = "1.4.2";
+static constexpr const char* kFirmwareVersion = "1.5.4";
 
 // BLE still advertises as "Decent Scale" so Flowlog's existing pairing
 // (Decent-compatible FFF0/FFF4/36F5) discovers the device without app changes.
@@ -12,7 +12,19 @@ static constexpr const char* kBleDeviceName = "Decent Scale";
 
 // Standalone cup-target UI (mirrors Flowlog Live yield bar defaults).
 static constexpr float kDefaultTargetYieldG = 36.0f;
-static constexpr float kDefaultYieldWarnG = 32.0f;
+// Soft buzzer when cup weight crosses this (wind-back cue on Coffeejack).
+static constexpr float kDefaultYieldWarnG = 34.0f;
+
+// OLED pressure bar window (bar). Fill is relative to this range; tick marks
+// every 1 bar between min and max.
+static constexpr float kPressureBarMinBar = 5.0f;
+static constexpr float kPressureBarMaxBar = 10.0f;
+
+// Phone-free brew: confirm prompt times out (no accidental start while
+// weighing beans). Pressure auto-start is disabled — brew is intentional.
+static constexpr uint32_t kBrewConfirmTimeoutMs = 10000;
+// Clear phone-forwarded pressure if no update within this window.
+static constexpr uint32_t kPhonePressureStaleMs = 2500;
 
 // WiFi / OTA
 static constexpr const char* kHostname = "half-decent";
@@ -27,6 +39,8 @@ static constexpr uint32_t kWeightNotifyHz = 10;
 static constexpr uint32_t kWeightNotifyIntervalMs = 1000 / kWeightNotifyHz;
 static constexpr uint32_t kDisplayRefreshMs = 100;
 static constexpr uint32_t kButtonPollMs = 10;
+// Sample recorder interval (matches weight notify rate).
+static constexpr uint32_t kShotSampleIntervalMs = kWeightNotifyIntervalMs;
 
 // OLED weight smoothing (BLE stays closer to raw readings).
 static constexpr float kOledFilterAlpha = 0.35f;

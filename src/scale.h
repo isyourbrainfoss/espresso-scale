@@ -18,7 +18,10 @@ class Scale {
   bool hasNewSample() const { return new_sample_; }
   void clearNewSample() { new_sample_ = false; }
 
-  void tare();
+  // Non-blocking by default — BLE command handlers must not stall the stack.
+  // Pass wait=true only for calibration / serial flows that need a settled zero.
+  void tare(bool wait = false);
+  bool tarePending() const { return tare_pending_; }
   void powerDown();  // HX711 low-power before deep sleep
   float calFactor() const { return cal_factor_; }
   void setCalFactor(float factor, bool save = true);
@@ -32,6 +35,7 @@ class Scale {
  private:
   bool ready_ = false;
   bool new_sample_ = false;
+  bool tare_pending_ = false;
   float cal_factor_ = 0;
   long tare_offset_ = 0;
   float raw_g_ = 0;

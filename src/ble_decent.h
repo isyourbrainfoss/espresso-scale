@@ -18,9 +18,21 @@ struct DecentCommand {
     TimerStop,
     TimerReset,
     Heartbeat,
+    // Flowlog extensions (type 0xF0+)
+    PhonePressure,   // phone → scale pressure mirror during app brew
+    PhoneBrewStart,
+    PhoneBrewEnd,
+    ScaleDisplayConfig,  // target/warn g + pressure bar window
   };
   Type type = Type::None;
   bool heartbeat_aware = false;  // byte5 == 0x01 on tare/LED
+  // PhonePressure payload
+  int16_t pressure_mbar = 0;
+  // ScaleDisplayConfig payload (uint8 grams / bar)
+  uint8_t cfg_target_g = 36;
+  uint8_t cfg_warn_g = 34;
+  uint8_t cfg_p_min = 5;
+  uint8_t cfg_p_max = 10;
 };
 
 class BleDecent {

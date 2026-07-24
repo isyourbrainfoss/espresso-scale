@@ -20,6 +20,15 @@ struct DisplayState {
   float target_yield_g = 36.0f;
   float warn_at_g = 32.0f;
   bool near_target = false;
+  // Pressure from PRS (standalone) or phone forward.
+  float pressure_bar = 0;
+  bool has_pressure = false;
+  float pressure_bar_min = 5.0f;
+  float pressure_bar_max = 10.0f;
+  bool recording = false;
+  bool prs_link = false;  // connected to Pressensor
+  // Standalone brew confirm: long-press Timer → prompt, short Timer OK / Tare cancel.
+  bool brew_confirm = false;
 };
 
 class Display {

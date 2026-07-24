@@ -4,16 +4,19 @@ Breadboard espresso scale firmware for **ESP32-S3 Super Mini** + HX711 + SSD1306
 
 Built as the **companion scale for [Flowlog](https://github.com/isyourbrainfoss/Flowlog)** using the public **Decent Scale BLE** protocol (device still advertises as `Decent Scale` so pairing stays unchanged).
 
-## Features (v1.4)
+## Features (v1.5)
 
 - Weight to 0.1 g (HX711 + 2 kg cell) with **auto-tare on boot**
-- **OLED**: large weight, **cup fill bar** toward target (default 36 g) with **warn mark** (32 g → “WIND BACK”)
-- Flow rate (g/s); on-scale auto shot-timer **disabled** (Flowlog owns timing)
+- **OLED**: weight + **pressure (bar)**, cup fill bar (target 36 g / warn 32 g), pressure bar 0–12 bar
+- Flow rate (g/s)
+- **Phone-free brew**: **long-press Timer** → OLED “Start brew?” → **Timer** to confirm (tare + PRS + record) or **Tare** to cancel. Short Timer is kitchen timer only; Tare short always zeros for dosing beans
+- **App brew pressure forward**: Flowlog writes type `0xF0` so the scale shows bar while the phone keeps PRS
+- **Shot export**: `GET /shot.json` (Flowlog History → Import from scale); optional Nextcloud WebDAV push
 - BLE weight stream whenever a phone is connected (not only after LED-on)
 - Softer multi-note buzzer cues
 - **Deep sleep**: long-press Tare → radios/OLED/HX711 off; **touch Tare or Timer** to wake
 - Battery / **USB** indicator; calibration in NVS
-- BLE: Decent Scale API (FFF4 notify, 36F5 write, 10 Hz weight, heartbeat)
+- BLE: Decent Scale API (FFF4 notify, 36F5 write, 10 Hz weight, heartbeat) + Flowlog `0xF0–F2`
 - **Wi‑Fi** setup AP + status page + **OTA**
 
 ## Hardware
@@ -72,9 +75,27 @@ wifi ap           # force setup AP now
 On the LAN: **http://half-decent.local/** (or `http://<ip>/`)
 
 - Live weight snapshot  
-- Links to **Wi‑Fi setup** and **OTA update**  
+- **Last shot** link → `/shot.json` (Flowlog-compatible JSON)  
+- Links to **Wi‑Fi setup**, **Nextcloud** (optional auto-push), and **OTA update**  
 
 OLED shows a small `WiFi` or `AP` label when wireless is up.
+
+### Buttons
+
+| Button | Short press | Long press |
+|--------|-------------|------------|
+| **Tare** (O) | Zero scale (safe while weighing beans). Cancels brew prompt. | Deep sleep |
+| **Timer** (□) | Kitchen timer start/stop. During brew: stop & save. On prompt: confirm. | **Start brew?** prompt |
+
+### Phone-free brew
+
+1. No phone needed (or phone not using the scale).
+2. **Long-press Timer** → OLED shows weight + “Start brew? / Timer=OK Tare=cancel”.
+3. **Timer** again → tare cup, scan `PRS*`, start recording. **Tare** cancels (does not zero).
+4. **Timer** during brew → save `/last_shot.json`, optional Nextcloud PUT.
+5. Flowlog **History → Import from scale** (`http://half-decent.local/shot.json`).
+
+Serial: `brew start` / `brew stop` / `prs` / `shot` / `nc push`.
 
 ### OTA update (PlatformIO)
 

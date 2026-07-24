@@ -48,6 +48,21 @@ bool Scale::begin() {
 void Scale::update() {
   if (!ready_) return;
   if (loadcell.update()) {
+    if (tare_pending_) {
+      if (loadcell.getTareStatus()) {
+        tare_pending_ = false;
+        raw_g_ = 0;
+        filtered_g_ = 0;
+        new_sample_ = true;
+        Serial.println("[scale] tared");
+      } else {
+        // Hold zero while HX711 averages the new offset.
+        raw_g_ = 0;
+        filtered_g_ = 0;
+        new_sample_ = true;
+      }
+      return;
+    }
     float g = loadcell.getData();
     raw_g_ = g;
     filtered_g_ = (kOledFilterAlpha * g) + ((1.0f - kOledFilterAlpha) * filtered_g_);
@@ -55,15 +70,22 @@ void Scale::update() {
   }
 }
 
-void Scale::tare() {
+void Scale::tare(bool wait) {
   if (!ready_) return;
   loadcell.tareNoDelay();
-  // Wait briefly for tare to complete so UI/BLE see zero soon.
+  tare_pending_ = true;
+  // Optimistic zero so BLE/UI don't keep streaming pre-tare grams.
+  raw_g_ = 0;
+  filtered_g_ = 0;
+  if (!wait) {
+    return;
+  }
   unsigned long t0 = millis();
   while (loadcell.getTareStatus() == false && millis() - t0 < 1500) {
     loadcell.update();
     delay(1);
   }
+  tare_pending_ = false;
   raw_g_ = 0;
   filtered_g_ = 0;
   Serial.println("[scale] tared");
@@ -88,7 +110,7 @@ bool Scale::startCalEmpty() {
   // Average several raw readings with current factor inverted.
   // HX711_ADC: getData() returns (raw - tareOffset) / calFactor.
   // For empty, we tare first so empty is zero, then place mass.
-  tare();
+  tare(/*wait=*/true);
   empty_raw_ = 0;
   empty_captured_ = true;
   Serial.println("[scale] cal empty: tared (place known mass, then finishCal)");
