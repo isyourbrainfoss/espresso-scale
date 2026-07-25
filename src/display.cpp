@@ -2,6 +2,7 @@
 
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <cmath>
 
 #include "config.h"
 #include "pins.h"
@@ -89,7 +90,36 @@ void Display::render(const DisplayState& s) {
     return;
   }
 
-  // Weight (left) + pressure (right)
+  // Idle kitchen scale: huge weight only (dosing beans, etc.).
+  if (!s.recording && !s.timer_running) {
+    char wbuf[16];
+    snprintf(wbuf, sizeof(wbuf), "%0.1f", static_cast<double>(s.weight_g));
+    u8g2.setFont(u8g2_font_logisoso32_tr);
+    int ww = u8g2.getStrWidth(wbuf);
+    // Center weight; fall back left if too wide.
+    int wx = (128 - ww) / 2;
+    if (wx < 0) wx = 0;
+    u8g2.drawStr(wx, 42, wbuf);
+    u8g2.setFont(u8g2_font_6x12_tr);
+    u8g2.drawStr(wx + ww + 2, 40, "g");
+    u8g2.setFont(u8g2_font_5x8_tr);
+    if (s.ble_connected || s.app_mode) {
+      u8g2.drawStr(2, 58, "APP");
+    } else if (s.ble_advertising) {
+      u8g2.drawStr(2, 58, "BLE");
+    }
+    if (fabsf(s.flow_g_s) >= 0.05f) {
+      char fbuf[16];
+      snprintf(fbuf, sizeof(fbuf), "%0.1fg/s", static_cast<double>(s.flow_g_s));
+      int fw = u8g2.getStrWidth(fbuf);
+      u8g2.drawStr(128 - fw - 2, 58, fbuf);
+    }
+    u8g2.drawStr(48, 63, "long Timer=brew");
+    u8g2.sendBuffer();
+    return;
+  }
+
+  // Shot / timer mode: weight + pressure + bars
   char wbuf[16];
   snprintf(wbuf, sizeof(wbuf), "%0.1f", static_cast<double>(s.weight_g));
   u8g2.setFont(u8g2_font_logisoso18_tr);
