@@ -202,6 +202,8 @@ void clearBrewConfirm() {
   brew_confirm_until_ms = 0;
 }
 
+void stopPhoneBrew();  // defined below; used by standalone start
+
 void armBrewConfirm() {
   if (phone_brew_active || standalone_brew_active || shot_rec.isRecording()) {
     return;
@@ -220,11 +222,12 @@ void cancelBrewConfirm() {
 }
 
 void startStandaloneBrew() {
-  if (phone_brew_active) {
-    Serial.println("[brew] ignore standalone — phone brew active");
-    return;
-  }
   if (standalone_brew_active) return;
+
+  // Phone may have left mirror mode; clear it so local brew owns the scale.
+  if (phone_brew_active) {
+    stopPhoneBrew();
+  }
 
   clearBrewConfirm();
   standalone_brew_active = true;
@@ -246,7 +249,9 @@ void startStandaloneBrew() {
 
 void stopStandaloneBrew() {
   clearBrewConfirm();
-  if (!standalone_brew_active && !shot_rec.isRecording()) {
+  const bool had_local_shot =
+      standalone_brew_active || shot_rec.isRecording();
+  if (!had_local_shot) {
     if (shot_timer.running()) {
       shot_timer.stop();
       buzzer.timerStopChime();
@@ -256,48 +261,48 @@ void stopStandaloneBrew() {
   standalone_brew_active = false;
   yield_warn_fired = false;
   shot_timer.stop();
+  const size_t n = shot_rec.sampleCount();
   if (shot_rec.isRecording()) {
     shot_rec.stop();
   }
-  // Keep PRS if still useful for idle display; disconnect when phone arrives.
   buzzer.timerStopChime();
-  setStatus("Shot saved", 2000);
-  Serial.println("[brew] standalone stop — shot on SPIFFS");
-  maybePushNextcloud();
+  // Only celebrate a real pull — empty/abort recordings stay quiet.
+  if (n > 5) {
+    setStatus("Shot saved", 2000);
+    Serial.println("[brew] standalone stop — shot on SPIFFS");
+    maybePushNextcloud();
+  } else {
+    setStatus("Brew cancel", 1200);
+    Serial.println("[brew] standalone stop — discarded short shot");
+  }
 }
 
 void startPhoneBrew() {
-  // App owns Pressensor; free any scale-side PRS link so phone can connect.
-  // Do NOT tare here — Flowlog already tared once at brew start. A second
-  // tare (especially after the cup is filling) zeros mid-shot and leaves the
-  // app with a final weight near 0 / -0.1 g.
+  // App owns the shot + Pressensor. Scale only mirrors pressure on OLED.
+  // Do NOT tare, do NOT SPIFFS-record, do NOT chime — app already tared and
+  // a noisy "brew start" here made Timer short later look like "Shot saved".
+  clearBrewConfirm();
+  if (standalone_brew_active || shot_rec.isRecording()) {
+    // Abort any leftover local recording without "Shot saved" UX confusion.
+    standalone_brew_active = false;
+    if (shot_rec.isRecording()) {
+      shot_rec.stop();
+    }
+  }
   prs.disconnect();
   phone_brew_active = true;
-  standalone_brew_active = false;
   yield_warn_fired = false;
-  shot_timer.start();
-  if (!shot_rec.isRecording()) {
-    shot_rec.start();
-  }
-  setStatus("App brew", 1500);
-  // Soft tick only — no full tare chime (would imply another zero).
-  buzzer.timerStartChime();
-  Serial.println("[brew] phone brew start (no re-tare)");
+  // Idle display will show APP + phone pressure; no local timer/REC.
+  setStatus("App brew", 1200);
+  Serial.println("[brew] phone brew start (mirror only, silent)");
 }
 
 void stopPhoneBrew() {
-  if (!phone_brew_active) return;
+  if (!phone_brew_active && !has_phone_pressure) return;
   phone_brew_active = false;
   has_phone_pressure = false;
-  shot_timer.stop();
-  if (shot_rec.isRecording()) {
-    shot_rec.stop();
-  }
-  buzzer.timerStopChime();
-  setStatus("App end", 1500);
+  // Never claim "Shot saved" for app-driven sessions.
   Serial.println("[brew] phone brew end");
-  // Optional push for phone-mirrored recording too.
-  maybePushNextcloud();
 }
 
 // Pure shot timer (no tare, no PRS, no SPIFFS record) — kitchen / dose timing.
@@ -359,7 +364,7 @@ void handleBleCommand(const DecentCommand& cmd) {
         prs.disconnect();
       }
       ble.notifyLedAck(battery.decentBatteryByte());
-      buzzer.tareChime();
+      // Silent — app start already sends tare; avoid beep spam.
       break;
     case DecentCommand::Type::LedOff:
       ble.notifyLedAck(battery.decentBatteryByte());
@@ -393,8 +398,7 @@ void handleBleCommand(const DecentCommand& cmd) {
     case DecentCommand::Type::ScaleDisplayConfig:
       scale_ui.applyFromBytes(cmd.cfg_target_g, cmd.cfg_warn_g, cmd.cfg_p_min,
                               cmd.cfg_p_max);
-      setStatus("Scale cfg OK", 1500);
-      buzzer.tareChime();
+      // Silent apply (called on every app brew start).
       break;
     default:
       break;
@@ -445,6 +449,13 @@ void handleButton(BtnEvent ev) {
       enterDeepSleep();
       break;
     case BtnEvent::TimerShort:
+      if (phone_brew_active) {
+        // App session left mirror mode — clear it so Timer can start a local brew.
+        stopPhoneBrew();
+        setStatus("App off", 1000);
+        ble.notifyButton(2, 1);
+        return;
+      }
       if (brew_confirm_pending) {
         // Second press confirms phone-free brew (tare + PRS + record).
         startStandaloneBrew();
@@ -462,6 +473,9 @@ void handleButton(BtnEvent ev) {
       ble.notifyButton(2, 1);
       break;
     case BtnEvent::TimerLong:
+      if (phone_brew_active) {
+        stopPhoneBrew();
+      }
       if (standalone_brew_active || shot_rec.isRecording()) {
         // Long-press during brew: stop + reset timer.
         doTimerReset();
