@@ -183,6 +183,11 @@ void BleDecent::onWrite(const uint8_t* data, size_t len) {
     cmd.cfg_warn_g = d1;
     cmd.cfg_p_min = d2;
     cmd.cfg_p_max = d3;
+  } else if (type == 0xF4) {
+    // Shot export: d0=opcode (0=list,1=get,2=status), d1=slot/age
+    cmd.type = DecentCommand::Type::ShotExport;
+    cmd.shot_opcode = d0;
+    cmd.shot_slot = d1;
   } else {
     return;
   }
@@ -211,6 +216,109 @@ bool BleDecent::sendNotify(const uint8_t* data, size_t len) {
   notify_char->setValue(data, len);
   notify_char->notify(true);  // only to clients that subscribed
   return true;
+}
+
+bool BleDecent::notifyShotList(const uint16_t sizes[3], uint8_t count) {
+  uint8_t pkt[10];
+  pkt[0] = 0x03;
+  pkt[1] = 0xF4;
+  pkt[2] = count > 3 ? 3 : count;
+  for (int i = 0; i < 3; i++) {
+    pkt[3 + i * 2] = static_cast<uint8_t>(sizes[i] & 0xFF);
+    pkt[4 + i * 2] = static_cast<uint8_t>((sizes[i] >> 8) & 0xFF);
+  }
+  return sendNotify(pkt, sizeof(pkt));
+}
+
+bool BleDecent::notifyShotStatus(const char* ip_or_status) {
+  if (!ip_or_status) ip_or_status = "";
+  size_t n = strlen(ip_or_status);
+  if (n > 16) n = 16;
+  uint8_t pkt[20];
+  pkt[0] = 0x03;
+  pkt[1] = 0xF6;
+  pkt[2] = static_cast<uint8_t>(n);
+  for (size_t i = 0; i < n; i++) {
+    pkt[3 + i] = static_cast<uint8_t>(ip_or_status[i]);
+  }
+  return sendNotify(pkt, 3 + n);
+}
+
+bool BleDecent::notifyShotChunk(uint8_t slot, uint16_t seq, uint16_t total_chunks,
+                                const uint8_t* data, size_t len, bool last) {
+  // Header 8 bytes + payload (keep under ~20 for default ATT MTU).
+  constexpr size_t kHdr = 8;
+  constexpr size_t kMaxPayload = 12;
+  if (len > kMaxPayload) len = kMaxPayload;
+  uint8_t pkt[kHdr + kMaxPayload];
+  pkt[0] = 0x03;
+  pkt[1] = 0xF5;
+  pkt[2] = slot;
+  pkt[3] = last ? 0x01 : 0x00;
+  pkt[4] = static_cast<uint8_t>(seq & 0xFF);
+  pkt[5] = static_cast<uint8_t>((seq >> 8) & 0xFF);
+  pkt[6] = static_cast<uint8_t>(total_chunks & 0xFF);
+  pkt[7] = static_cast<uint8_t>((total_chunks >> 8) & 0xFF);
+  for (size_t i = 0; i < len; i++) {
+    pkt[kHdr + i] = data[i];
+  }
+  return sendNotify(pkt, kHdr + len);
+}
+
+bool BleDecent::beginShotTransfer(uint8_t slot, const String& json) {
+  if (json.isEmpty() || !connected_) return false;
+  cancelShotTransfer();
+  xfer_json_ = json;
+  xfer_slot_ = slot;
+  xfer_offset_ = 0;
+  xfer_seq_ = 0;
+  constexpr size_t kPayload = 12;
+  xfer_total_ = static_cast<uint16_t>((json.length() + kPayload - 1) / kPayload);
+  if (xfer_total_ == 0) xfer_total_ = 1;
+  xfer_active_ = true;
+  xfer_last_ms_ = 0;
+  Serial.printf("[ble] shot xfer start slot=%u bytes=%u chunks=%u\n",
+                static_cast<unsigned>(slot),
+                static_cast<unsigned>(json.length()),
+                static_cast<unsigned>(xfer_total_));
+  return true;
+}
+
+void BleDecent::cancelShotTransfer() {
+  xfer_active_ = false;
+  xfer_json_ = String();
+  xfer_offset_ = 0;
+  xfer_seq_ = 0;
+  xfer_total_ = 0;
+}
+
+void BleDecent::pumpShotTransfer() {
+  if (!xfer_active_ || !connected_) {
+    if (xfer_active_ && !connected_) cancelShotTransfer();
+    return;
+  }
+  // Pace chunks so we don't flood the phone (~40 notifies/s).
+  const uint32_t now = millis();
+  if (now - xfer_last_ms_ < 25) return;
+  xfer_last_ms_ = now;
+
+  constexpr size_t kPayload = 12;
+  size_t remaining = xfer_json_.length() - xfer_offset_;
+  size_t n = remaining > kPayload ? kPayload : remaining;
+  const auto* data =
+      reinterpret_cast<const uint8_t*>(xfer_json_.c_str() + xfer_offset_);
+  bool last = (xfer_offset_ + n) >= xfer_json_.length();
+  if (!notifyShotChunk(xfer_slot_, xfer_seq_, xfer_total_, data, n, last)) {
+    Serial.println("[ble] shot chunk notify failed — abort");
+    cancelShotTransfer();
+    return;
+  }
+  xfer_offset_ += n;
+  xfer_seq_++;
+  if (last) {
+    Serial.println("[ble] shot xfer complete");
+    cancelShotTransfer();
+  }
 }
 
 void BleDecent::notifyWeight(float weight_g, bool is_stable, uint8_t minutes,

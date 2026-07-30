@@ -11,7 +11,7 @@ Built as the **companion scale for [Flowlog](https://github.com/isyourbrainfoss/
 - Flow rate (g/s)
 - **Phone-free brew**: **long-press Timer** → OLED “Start brew?” → **Timer** to confirm (tare + PRS + record) or **Tare** to cancel. Short Timer is kitchen timer only; Tare short always zeros for dosing beans
 - **App brew pressure forward**: Flowlog writes type `0xF0` so the scale shows bar while the phone keeps PRS
-- **Shot export**: `GET /shot.json` (Flowlog History → Import from scale); optional Nextcloud WebDAV push
+- **Shot export**: last **3** phone-free shots on SPIFFS; `GET /shots.json`, `/shot.json` (newest), `/shot/0|1|2.json`; Flowlog History → Import (Wi‑Fi IP or **Bluetooth**); optional Nextcloud WebDAV push
 - BLE weight stream whenever a phone is connected (not only after LED-on)
 - Softer multi-note buzzer cues
 - **Deep sleep**: long-press Tare → radios/OLED/HX711 off; **touch Tare or Timer** to wake

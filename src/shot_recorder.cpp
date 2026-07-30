@@ -1,18 +1,103 @@
 #include "shot_recorder.h"
 
+#include <Preferences.h>
 #include <SPIFFS.h>
 #include <cstdio>
-#include <time.h>
+#include <ctime>
 
 namespace {
-const char* kShotPath = "/last_shot.json";
+constexpr const char* kNvsNs = "shots";
+constexpr const char* kNvsHead = "head";
+constexpr const char* kNvsCount = "count";
+constexpr const char* kLegacyPath = "/last_shot.json";
+}  // namespace
+
+void ShotRecorder::slotPath(size_t physical, char* out, size_t out_len) {
+  snprintf(out, out_len, "/s%u.json", static_cast<unsigned>(physical % kMaxStoredShots));
+}
+
+size_t ShotRecorder::physicalIndex(size_t age) const {
+  if (stored_count_ == 0 || age >= stored_count_) return 0;
+  // Newest is the last written slot: (head_ + kMax - 1) % kMax
+  return (head_ + kMaxStoredShots - 1 - age) % kMaxStoredShots;
 }
 
 void ShotRecorder::begin() {
   if (!SPIFFS.begin(true)) {
     Serial.println("[shot] SPIFFS mount failed");
-  } else {
-    loadFromFlash();
+    return;
+  }
+  loadIndex();
+  migrateLegacyLastShot();
+  for (size_t i = 0; i < stored_count_; i++) {
+    refreshMetaFromFile(physicalIndex(i));
+  }
+  Serial.printf("[shot] ring: %u stored (head=%u)\n",
+                static_cast<unsigned>(stored_count_),
+                static_cast<unsigned>(head_));
+}
+
+void ShotRecorder::migrateLegacyLastShot() {
+  if (!SPIFFS.exists(kLegacyPath)) return;
+  if (stored_count_ > 0) {
+    // Already have ring data — drop legacy to free space.
+    SPIFFS.remove(kLegacyPath);
+    return;
+  }
+  File f = SPIFFS.open(kLegacyPath, FILE_READ);
+  if (!f) return;
+  String json = f.readString();
+  f.close();
+  if (json.length() < 20) {
+    SPIFFS.remove(kLegacyPath);
+    return;
+  }
+  char path[16];
+  slotPath(0, path, sizeof(path));
+  File out = SPIFFS.open(path, FILE_WRITE);
+  if (out) {
+    out.print(json);
+    out.close();
+    head_ = 1;
+    stored_count_ = 1;
+    persistIndex();
+    meta_[0] = parseMetaFromJson(json, json.length());
+    Serial.printf("[shot] migrated legacy last_shot.json → %s\n", path);
+  }
+  SPIFFS.remove(kLegacyPath);
+}
+
+void ShotRecorder::persistIndex() {
+  Preferences p;
+  if (!p.begin(kNvsNs, false)) return;
+  p.putUChar(kNvsHead, head_);
+  p.putUChar(kNvsCount, stored_count_);
+  p.end();
+}
+
+void ShotRecorder::loadIndex() {
+  Preferences p;
+  if (!p.begin(kNvsNs, true)) {
+    head_ = 0;
+    stored_count_ = 0;
+    return;
+  }
+  head_ = p.getUChar(kNvsHead, 0);
+  stored_count_ = p.getUChar(kNvsCount, 0);
+  p.end();
+  if (head_ >= kMaxStoredShots) head_ = 0;
+  if (stored_count_ > kMaxStoredShots) stored_count_ = kMaxStoredShots;
+
+  // Verify files still exist.
+  uint8_t present = 0;
+  for (uint8_t age = 0; age < stored_count_; age++) {
+    char path[16];
+    slotPath(physicalIndex(age), path, sizeof(path));
+    if (SPIFFS.exists(path)) present++;
+  }
+  if (present == 0) {
+    stored_count_ = 0;
+    head_ = 0;
   }
 }
 
@@ -33,11 +118,26 @@ void ShotRecorder::stop() {
   saveToFlash();
 }
 
+void ShotRecorder::abort() {
+  if (!recording_ && sample_count_ == 0) return;
+  recording_ = false;
+  sample_count_ = 0;
+  Serial.println("[shot] abort — not saved");
+}
+
 void ShotRecorder::clear() {
   recording_ = false;
   sample_count_ = 0;
-  flash_has_shot_ = false;
-  SPIFFS.remove(kShotPath);
+  for (size_t i = 0; i < kMaxStoredShots; i++) {
+    char path[16];
+    slotPath(i, path, sizeof(path));
+    SPIFFS.remove(path);
+    meta_[i] = ShotSlotMeta{};
+  }
+  SPIFFS.remove(kLegacyPath);
+  head_ = 0;
+  stored_count_ = 0;
+  persistIndex();
 }
 
 void ShotRecorder::add(float pressure_bar, bool has_p, float weight_g,
@@ -81,7 +181,6 @@ float ShotRecorder::lastPressureBar() const {
 String ShotRecorder::toJson() const {
   if (sample_count_ == 0) return String();
 
-  // startedAt: use epoch if set, else synthetic UTC from millis.
   char id[40];
   char started[40];
   char ended[40];
@@ -130,14 +229,12 @@ String ShotRecorder::toJson() const {
       json += F(",\"weightG\":");
       json += String(s.w_dg / 10.0f, 2);
     }
-    // Flow from consecutive weight samples (g/s) — matches Flowlog live metrics.
     if (i > 0 && s.w_dg != kNone && samples_[i - 1].w_dg != kNone) {
       const float dt =
           (static_cast<float>(s.t_cs) - static_cast<float>(samples_[i - 1].t_cs)) /
           100.0f;
       if (dt > 0.01f) {
-        const float dw =
-            (s.w_dg - samples_[i - 1].w_dg) / 10.0f;
+        const float dw = (s.w_dg - samples_[i - 1].w_dg) / 10.0f;
         json += F(",\"flowGs\":");
         json += String(dw / dt, 3);
       }
@@ -148,42 +245,158 @@ String ShotRecorder::toJson() const {
   return json;
 }
 
+ShotSlotMeta ShotRecorder::parseMetaFromJson(const String& json, size_t bytes) {
+  ShotSlotMeta m;
+  m.present = json.length() > 20;
+  m.bytes = bytes;
+  // Lightweight field scrape (avoid full JSON parser on MCU).
+  auto extract = [&](const char* key) -> String {
+    String pat = String("\"") + key + "\":\"";
+    int i = json.indexOf(pat);
+    if (i < 0) return String();
+    i += pat.length();
+    int j = json.indexOf('"', i);
+    if (j < 0) return String();
+    return json.substring(i, j);
+  };
+  m.id = extract("id");
+  m.startedAt = extract("startedAt");
+  int yi = json.indexOf("\"yieldG\":");
+  if (yi >= 0) {
+    m.yieldG = json.substring(yi + 9).toFloat();
+  }
+  // Count samples via "elapsedMs" occurrences.
+  size_t count = 0;
+  int pos = 0;
+  while (true) {
+    int n = json.indexOf("\"elapsedMs\"", pos);
+    if (n < 0) break;
+    count++;
+    pos = n + 11;
+  }
+  m.samples = count;
+  return m;
+}
+
+void ShotRecorder::refreshMetaFromFile(size_t physical) {
+  char path[16];
+  slotPath(physical, path, sizeof(path));
+  if (!SPIFFS.exists(path)) {
+    meta_[physical] = ShotSlotMeta{};
+    return;
+  }
+  File f = SPIFFS.open(path, FILE_READ);
+  if (!f) {
+    meta_[physical] = ShotSlotMeta{};
+    return;
+  }
+  size_t sz = f.size();
+  // Only need the header for meta; still read all for sample count accuracy
+  // on small files — cap read for huge ones.
+  String json;
+  if (sz <= 4096) {
+    json = f.readString();
+  } else {
+    // Read first 512 for id/startedAt/yield; estimate samples from size.
+    char buf[513];
+    size_t n = f.readBytes(buf, 512);
+    buf[n] = 0;
+    json = String(buf);
+    f.close();
+    ShotSlotMeta m = parseMetaFromJson(json, sz);
+    m.bytes = sz;
+    if (m.samples == 0) {
+      m.samples = sz / 48;  // rough
+    }
+    meta_[physical] = m;
+    return;
+  }
+  f.close();
+  meta_[physical] = parseMetaFromJson(json, sz);
+}
+
 bool ShotRecorder::saveToFlash() {
   String json = toJson();
   if (json.isEmpty()) return false;
-  File f = SPIFFS.open(kShotPath, FILE_WRITE);
+
+  char path[16];
+  slotPath(head_, path, sizeof(path));
+  File f = SPIFFS.open(path, FILE_WRITE);
   if (!f) {
     Serial.println("[shot] write open failed");
     return false;
   }
   size_t n = f.print(json);
   f.close();
-  flash_has_shot_ = n > 20;
-  Serial.printf("[shot] saved %u bytes to %s\n", static_cast<unsigned>(n),
-                kShotPath);
-  return n > 0;
+  if (n < 20) {
+    Serial.println("[shot] write too short");
+    return false;
+  }
+
+  meta_[head_] = parseMetaFromJson(json, n);
+  head_ = static_cast<uint8_t>((head_ + 1) % kMaxStoredShots);
+  if (stored_count_ < kMaxStoredShots) {
+    stored_count_++;
+  }
+  persistIndex();
+  Serial.printf("[shot] saved %u bytes → %s (stored=%u)\n",
+                static_cast<unsigned>(n), path,
+                static_cast<unsigned>(stored_count_));
+  return true;
 }
 
 bool ShotRecorder::loadFromFlash() {
-  if (!SPIFFS.exists(kShotPath)) {
-    flash_has_shot_ = false;
-    return false;
+  loadIndex();
+  for (size_t i = 0; i < kMaxStoredShots; i++) {
+    refreshMetaFromFile(i);
   }
-  File f = SPIFFS.open(kShotPath, FILE_READ);
-  if (!f) return false;
-  size_t sz = f.size();
-  f.close();
-  flash_has_shot_ = sz > 20;
-  Serial.printf("[shot] flash has last_shot.json (%u bytes)\n",
-                static_cast<unsigned>(sz));
-  return flash_has_shot_;
+  return stored_count_ > 0;
 }
 
-String ShotRecorder::readFlashJson() const {
-  if (!SPIFFS.exists(kShotPath)) return String();
-  File f = SPIFFS.open(kShotPath, FILE_READ);
+String ShotRecorder::readSlotJson(size_t age) const {
+  if (age >= stored_count_) return String();
+  char path[16];
+  slotPath(physicalIndex(age), path, sizeof(path));
+  if (!SPIFFS.exists(path)) return String();
+  File f = SPIFFS.open(path, FILE_READ);
   if (!f) return String();
   String s = f.readString();
   f.close();
   return s;
+}
+
+ShotSlotMeta ShotRecorder::slotMeta(size_t age) const {
+  if (age >= stored_count_) return ShotSlotMeta{};
+  return meta_[physicalIndex(age)];
+}
+
+String ShotRecorder::listJson() const {
+  String json;
+  json.reserve(256 + stored_count_ * 120);
+  json += F("{\"count\":");
+  json += String(stored_count_);
+  json += F(",\"max\":");
+  json += String(kMaxStoredShots);
+  json += F(",\"shots\":[");
+  for (size_t age = 0; age < stored_count_; age++) {
+    if (age) json += ',';
+    ShotSlotMeta m = slotMeta(age);
+    json += F("{\"index\":");
+    json += String(age);
+    json += F(",\"id\":\"");
+    json += m.id;
+    json += F("\",\"startedAt\":\"");
+    json += m.startedAt;
+    json += F("\",\"samples\":");
+    json += String(m.samples);
+    json += F(",\"bytes\":");
+    json += String(m.bytes);
+    json += F(",\"yieldG\":");
+    json += String(m.yieldG, 1);
+    json += F(",\"path\":\"/shot/");
+    json += String(age);
+    json += F(".json\"}");
+  }
+  json += F("]}");
+  return json;
 }

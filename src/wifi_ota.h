@@ -21,9 +21,15 @@ class WifiOta {
   using ShotJsonFn = std::function<String()>;
   // Optional: true when a standalone/phone shot is available for export.
   using HasShotFn = std::function<bool()>;
+  // Optional: GET /shots.json list metadata.
+  using ShotsListFn = std::function<String()>;
+  // Optional: GET /shot/<age>.json — age 0 = newest.
+  using ShotAtFn = std::function<String(size_t age)>;
 
   bool begin(WeightFn weight_fn = nullptr, ShotJsonFn shot_json_fn = nullptr,
-             HasShotFn has_shot_fn = nullptr);
+             HasShotFn has_shot_fn = nullptr,
+             ShotsListFn shots_list_fn = nullptr,
+             ShotAtFn shot_at_fn = nullptr);
   void end();  // WiFi off before deep sleep
   void update();
 
@@ -59,6 +65,8 @@ class WifiOta {
   WeightFn weight_fn_;
   ShotJsonFn shot_json_fn_;
   HasShotFn has_shot_fn_;
+  ShotsListFn shots_list_fn_;
+  ShotAtFn shot_at_fn_;
   String ssid_;
   uint32_t last_reconnect_ms_ = 0;
 

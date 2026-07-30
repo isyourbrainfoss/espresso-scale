@@ -262,18 +262,20 @@ void stopStandaloneBrew() {
   yield_warn_fired = false;
   shot_timer.stop();
   const size_t n = shot_rec.sampleCount();
-  if (shot_rec.isRecording()) {
-    shot_rec.stop();
-  }
   buzzer.timerStopChime();
-  // Only celebrate a real pull — empty/abort recordings stay quiet.
-  if (n > 5) {
-    setStatus("Shot saved", 2000);
-    Serial.println("[brew] standalone stop — shot on SPIFFS");
-    maybePushNextcloud();
-  } else {
-    setStatus("Brew cancel", 1200);
-    Serial.println("[brew] standalone stop — discarded short shot");
+  // Only save real pulls into the 3-shot ring — abort short/empty recordings.
+  if (shot_rec.isRecording()) {
+    if (n > 5) {
+      shot_rec.stop();
+      setStatus("Shot saved", 2000);
+      Serial.printf("[brew] standalone stop — stored=%u\n",
+                    static_cast<unsigned>(shot_rec.storedCount()));
+      maybePushNextcloud();
+    } else {
+      shot_rec.abort();
+      setStatus("Brew cancel", 1200);
+      Serial.println("[brew] standalone stop — discarded short shot");
+    }
   }
 }
 
@@ -400,6 +402,36 @@ void handleBleCommand(const DecentCommand& cmd) {
                               cmd.cfg_p_max);
       // Silent apply (called on every app brew start).
       break;
+    case DecentCommand::Type::ShotExport: {
+      // opcode 0=list sizes, 1=transfer age, 2=status/IP
+      if (cmd.shot_opcode == 0) {
+        uint16_t sizes[3] = {0, 0, 0};
+        const uint8_t n = static_cast<uint8_t>(shot_rec.storedCount());
+        for (uint8_t i = 0; i < n && i < 3; i++) {
+          sizes[i] = static_cast<uint16_t>(
+              shot_rec.slotMeta(i).bytes > 65535 ? 65535
+                                                 : shot_rec.slotMeta(i).bytes);
+        }
+        ble.notifyShotList(sizes, n);
+      } else if (cmd.shot_opcode == 1) {
+        if (ble.isTransferBusy()) {
+          ble.cancelShotTransfer();
+        }
+        String json = shot_rec.readSlotJson(cmd.shot_slot);
+        if (json.isEmpty()) {
+          // Empty list response for missing slot
+          uint16_t z[3] = {0, 0, 0};
+          ble.notifyShotList(z, 0);
+        } else {
+          ble.beginShotTransfer(cmd.shot_slot, json);
+        }
+      } else if (cmd.shot_opcode == 2) {
+        String ip = wifi_ota.ipString();
+        if (ip.isEmpty()) ip = "no-wifi";
+        ble.notifyShotStatus(ip.c_str());
+      }
+      break;
+    }
     default:
       break;
   }
@@ -688,8 +720,12 @@ String shotJsonForHttp() {
 }
 
 bool hasShotForHttp() {
-  return shot_rec.hasShot() || shot_rec.isRecording();
+  return shot_rec.storedCount() > 0;
 }
+
+String shotsListForHttp() { return shot_rec.listJson(); }
+
+String shotAtForHttp(size_t age) { return shot_rec.readSlotJson(age); }
 
 }  // namespace
 
@@ -728,7 +764,7 @@ void setup() {
   prs.begin();
 
   wifi_ota.begin([]() { return scale.displayGrams(); }, shotJsonForHttp,
-                 hasShotForHttp);
+                 hasShotForHttp, shotsListForHttp, shotAtForHttp);
   wifi_ota.printStatus();
   if (wifi_ota.isAccessPoint()) {
     setStatus("WiFi setup AP", 4000);
@@ -746,6 +782,7 @@ void loop() {
   scale.update();
   buzzer.update();
   ble.update();
+  ble.pumpShotTransfer();
   prs.update();
   wifi_ota.update();
   battery.update();

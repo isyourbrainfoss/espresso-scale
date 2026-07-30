@@ -30,6 +30,8 @@ WifiOta* g_wifi = nullptr;
 WifiOta::WeightFn g_weight;
 WifiOta::ShotJsonFn g_shot_json;
 WifiOta::HasShotFn g_has_shot;
+WifiOta::ShotsListFn g_shots_list;
+WifiOta::ShotAtFn g_shot_at;
 
 String htmlEscape(const String& s) {
   String o;
@@ -93,9 +95,13 @@ void handleRoot() {
   body += String(w, 1);
   body += F(" g</p>");
   const bool has_shot = g_has_shot ? g_has_shot() : false;
-  body += F("<p><b>Last shot:</b> ");
-  body += has_shot ? F("available") : F("none");
-  body += F(" · <a href=/shot.json>Download shot.json</a></p>");
+  body += F("<p><b>Stored shots:</b> ");
+  body += has_shot ? F("yes (up to 3)") : F("none");
+  body += F(" · <a href=/shots.json>List</a>"
+            " · <a href=/shot.json>Newest shot.json</a>"
+            " · <a href=/shot/0.json>0</a>"
+            " · <a href=/shot/1.json>1</a>"
+            " · <a href=/shot/2.json>2</a></p>");
   body += F("<p><a href=/wifi>Wi‑Fi setup</a> · <a href=/update>OTA update</a>"
             " · <a href=/nextcloud>Nextcloud</a></p>");
   body += F("<p class=meta>PlatformIO wireless upload uses ArduinoOTA on this host "
@@ -103,10 +109,12 @@ void handleRoot() {
             "<code>pio run -t upload -e ota --upload-port ");
   body += ip;
   body += F("</code></p>");
-  body += F("<p class=meta>Import into Flowlog: History → Import from scale, "
-            "or open <code>http://");
+  body += F("<p class=meta><b>Import into Flowlog:</b> History → Import from scale. "
+            "Phones often cannot resolve <code>half-decent.local</code> — use this "
+            "IP: <code>");
   body += ip;
-  body += F("/shot.json</code></p>");
+  body += F("</code><br>"
+            "Or import over Bluetooth when the scale is paired in Flowlog.</p>");
   server.send(200, "text/html", pageShell("Half Decent Scale", body));
 }
 
@@ -118,6 +126,37 @@ void handleShotJson() {
   String json = g_shot_json();
   if (json.isEmpty()) {
     server.send(404, "application/json", "{\"error\":\"no shot recorded\"}");
+    return;
+  }
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", json);
+}
+
+void handleShotsList() {
+  if (!g_shots_list) {
+    server.send(503, "application/json", "{\"error\":\"no shot list\"}");
+    return;
+  }
+  String json = g_shots_list();
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", json);
+}
+
+void handleShotAt() {
+  // URI: /shot/0.json /shot/1.json /shot/2.json
+  String uri = server.uri();
+  int age = -1;
+  if (uri.startsWith("/shot/") && uri.endsWith(".json")) {
+    String mid = uri.substring(6, uri.length() - 5);
+    age = mid.toInt();
+  }
+  if (age < 0 || age > 2 || !g_shot_at) {
+    server.send(404, "application/json", "{\"error\":\"invalid shot index\"}");
+    return;
+  }
+  String json = g_shot_at(static_cast<size_t>(age));
+  if (json.isEmpty()) {
+    server.send(404, "application/json", "{\"error\":\"no shot at index\"}");
     return;
   }
   server.sendHeader("Access-Control-Allow-Origin", "*");
@@ -253,6 +292,10 @@ void setupRoutes() {
   server.on("/wifi", HTTP_GET, handleWifiGet);
   server.on("/wifi", HTTP_POST, handleWifiPost);
   server.on("/shot.json", HTTP_GET, handleShotJson);
+  server.on("/shots.json", HTTP_GET, handleShotsList);
+  server.on("/shot/0.json", HTTP_GET, handleShotAt);
+  server.on("/shot/1.json", HTTP_GET, handleShotAt);
+  server.on("/shot/2.json", HTTP_GET, handleShotAt);
   server.on("/nextcloud", HTTP_GET, handleNextcloudGet);
   server.on("/nextcloud", HTTP_POST, handleNextcloudPost);
   server.on("/nextcloud-clear", HTTP_POST, handleNextcloudClear);
@@ -413,7 +456,9 @@ void WifiOta::startServices() {
 
   setupRoutes();
   server.begin();
-  Serial.println("[wifi] HTTP :80  (/  /wifi  /shot.json  /nextcloud  /update)");
+  Serial.println(
+      "[wifi] HTTP :80  (/  /wifi  /shot.json  /shots.json  /shot/N.json  "
+      "/nextcloud  /update)");
 
   ArduinoOTA.setHostname(kHostname);
   if (kOtaPassword && kOtaPassword[0] != '\0') {
@@ -456,14 +501,19 @@ void WifiOta::end() {
 }
 
 bool WifiOta::begin(WeightFn weight_fn, ShotJsonFn shot_json_fn,
-                    HasShotFn has_shot_fn) {
+                    HasShotFn has_shot_fn, ShotsListFn shots_list_fn,
+                    ShotAtFn shot_at_fn) {
   weight_fn_ = std::move(weight_fn);
   shot_json_fn_ = std::move(shot_json_fn);
   has_shot_fn_ = std::move(has_shot_fn);
+  shots_list_fn_ = std::move(shots_list_fn);
+  shot_at_fn_ = std::move(shot_at_fn);
   g_wifi = this;
   g_weight = weight_fn_;
   g_shot_json = shot_json_fn_;
   g_has_shot = has_shot_fn_;
+  g_shots_list = shots_list_fn_;
+  g_shot_at = shot_at_fn_;
   WiFi.persistent(false);
 
   String ssid, pass;
