@@ -827,14 +827,20 @@ void loop() {
 
     if (shot_rec.isRecording()) {
       shot_rec.add(p_bar, has_p, w, true);
-      // Soft wind-back cue near target (once per brew).
-      if (!yield_warn_fired && w >= scale_ui.get().warn_at_g) {
-        yield_warn_fired = true;
-        buzzer.yieldWarnChime();
-        Serial.printf("[brew] yield warn @ %.1fg (thresh %.0f)\n",
-                      static_cast<double>(w),
-                      static_cast<double>(scale_ui.get().warn_at_g));
-      }
+    }
+    // Soft wind-back cue near target (once per brew) — standalone SPIFFS
+    // recording OR phone app brew (mirror mode does not SPIFFS-record).
+    const bool yield_warn_armed =
+        shot_rec.isRecording() || standalone_brew_active || phone_brew_active;
+    if (yield_warn_armed && !yield_warn_fired &&
+        w >= scale_ui.get().warn_at_g) {
+      yield_warn_fired = true;
+      buzzer.yieldWarnChime();
+      Serial.printf("[brew] yield warn @ %.1fg (thresh %.0f) app=%d rec=%d\n",
+                    static_cast<double>(w),
+                    static_cast<double>(scale_ui.get().warn_at_g),
+                    phone_brew_active ? 1 : 0,
+                    shot_rec.isRecording() ? 1 : 0);
     }
 
     uint8_t mm = 0, ss = 0, ds = 0;
