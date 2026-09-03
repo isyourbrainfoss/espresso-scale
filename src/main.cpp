@@ -294,8 +294,8 @@ void startPhoneBrew() {
   prs.disconnect();
   phone_brew_active = true;
   yield_warn_fired = false;
-  // Idle display will show APP + phone pressure; no local timer/REC.
-  setStatus("App brew", 1200);
+  // Keep live grams on the OLED. Tare already chimed; a full-screen
+  // "App brew" overlay hid the pour. Idle layout stays huge weight.
   Serial.println("[brew] phone brew start (mirror only, silent)");
 }
 

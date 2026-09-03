@@ -107,6 +107,19 @@ class BleDecent {
   bool heartbeat_required_ = false;
   uint32_t last_heartbeat_ms_ = 0;
 
+  // Commands parsed on the NimBLE host task, executed from loop() via update().
+  // Never run NVS / Serial / notify / prs.disconnect() inside onWrite.
+  static constexpr size_t kCmdQueue = 8;
+  DecentCommand cmd_queue_[kCmdQueue];
+  volatile uint8_t cmd_head_ = 0;
+  volatile uint8_t cmd_tail_ = 0;
+  volatile uint8_t cmd_count_ = 0;
+  portMUX_TYPE cmd_mux_ = portMUX_INITIALIZER_UNLOCKED;
+
+  void enqueueCommand(const DecentCommand& cmd);
+  void pumpCommands();
+  void disconnectPeer();
+
   friend class DecentServerCallbacks;
   friend class DecentCharCallbacks;
 

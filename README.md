@@ -4,7 +4,12 @@ Breadboard espresso scale firmware for **ESP32-S3 Super Mini** + HX711 + SSD1306
 
 Built as the **companion scale for [Flowlog](https://github.com/isyourbrainfoss/Flowlog)** using the public **Decent Scale BLE** protocol (device still advertises as `Decent Scale` so pairing stays unchanged).
 
-## Features (v1.5)
+## Features (v1.6.2)
+
+v1.6.2 keeps **grams as the primary OLED** during an app brew (no full-screen
+"App brew" overlay) and runs BLE command handling on the Arduino loop instead
+of the NimBLE host task, so a brew-start write burst is less likely to reboot
+the scale.
 
 - Weight to 0.1 g (HX711 + 2 kg cell) with **auto-tare on boot**
 - **OLED**: weight + **pressure (bar)**, cup fill bar (target 36 g / warn 32 g), pressure bar 0–12 bar

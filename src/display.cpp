@@ -108,13 +108,22 @@ void Display::render(const DisplayState& s) {
     } else if (s.ble_advertising) {
       u8g2.drawStr(2, 58, "BLE");
     }
+    // Right side: flow while pouring (see espresso hit), else live bar.
     if (fabsf(s.flow_g_s) >= 0.05f) {
       char fbuf[16];
       snprintf(fbuf, sizeof(fbuf), "%0.1fg/s", static_cast<double>(s.flow_g_s));
       int fw = u8g2.getStrWidth(fbuf);
       u8g2.drawStr(128 - fw - 2, 58, fbuf);
+    } else if (s.has_pressure) {
+      char pbuf[16];
+      snprintf(pbuf, sizeof(pbuf), "%0.1fb",
+               static_cast<double>(s.pressure_bar));
+      int pw = u8g2.getStrWidth(pbuf);
+      u8g2.drawStr(128 - pw - 2, 58, pbuf);
     }
-    u8g2.drawStr(48, 63, "long Timer=brew");
+    if (!s.app_mode) {
+      u8g2.drawStr(48, 63, "long Timer=brew");
+    }
     u8g2.sendBuffer();
     return;
   }

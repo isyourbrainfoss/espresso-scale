@@ -1,6 +1,7 @@
 #include "ble_decent.h"
 
 #include <NimBLEDevice.h>
+#include <vector>
 
 #include "config.h"
 
@@ -116,8 +117,9 @@ void BleDecent::onNotifySubscribed(bool subscribed) {
 }
 
 void BleDecent::onWrite(const uint8_t* data, size_t len) {
+  // Runs on the NimBLE host task. Parse + enqueue only — no Serial, notify,
+  // NVS, or client disconnect from this path (those reboot ESP32-S3 + CDC).
   if (len < 7) {
-    Serial.printf("[ble] short write len=%u\n", static_cast<unsigned>(len));
     return;
   }
   if (data[0] != 0x03) return;
@@ -139,8 +141,8 @@ void BleDecent::onWrite(const uint8_t* data, size_t len) {
     }
   } else if (type == 0x0A) {
     if (d0 == 0x03 && d1 == 0xFF && d2 == 0xFF) {
-      cmd.type = DecentCommand::Type::Heartbeat;
       noteHeartbeat();
+      return; // timestamp only — do not enqueue a no-op onto the command queue
     } else if (d0 == 0x02) {
       cmd.type = DecentCommand::Type::PowerOff;
     } else if (d0 == 0x00) {
@@ -192,8 +194,69 @@ void BleDecent::onWrite(const uint8_t* data, size_t len) {
     return;
   }
 
-  if (on_command_ && cmd.type != DecentCommand::Type::None) {
-    on_command_(cmd);
+  if (cmd.type != DecentCommand::Type::None) {
+    enqueueCommand(cmd);
+  }
+}
+
+void BleDecent::enqueueCommand(const DecentCommand& cmd) {
+  portENTER_CRITICAL(&cmd_mux_);
+  // Coalesce live pressure so a 1 Hz stream cannot fill the queue.
+  if (cmd.type == DecentCommand::Type::PhonePressure && cmd_count_ > 0) {
+    for (uint8_t i = 0; i < cmd_count_; i++) {
+      const uint8_t idx = (cmd_head_ + i) % kCmdQueue;
+      if (cmd_queue_[idx].type == DecentCommand::Type::PhonePressure) {
+        cmd_queue_[idx] = cmd;
+        portEXIT_CRITICAL(&cmd_mux_);
+        return;
+      }
+    }
+  }
+  // Drop duplicate LED-on / heartbeat — brew-start bursts send extras.
+  if (cmd.type == DecentCommand::Type::Heartbeat ||
+      cmd.type == DecentCommand::Type::LedOn) {
+    for (uint8_t i = 0; i < cmd_count_; i++) {
+      const uint8_t idx = (cmd_head_ + i) % kCmdQueue;
+      if (cmd_queue_[idx].type == cmd.type) {
+        portEXIT_CRITICAL(&cmd_mux_);
+        return;
+      }
+    }
+  }
+  if (cmd_count_ >= kCmdQueue) {
+    portEXIT_CRITICAL(&cmd_mux_);
+    return;
+  }
+  cmd_queue_[cmd_tail_] = cmd;
+  cmd_tail_ = (cmd_tail_ + 1) % kCmdQueue;
+  cmd_count_++;
+  portEXIT_CRITICAL(&cmd_mux_);
+}
+
+void BleDecent::pumpCommands() {
+  // One or two per loop() so NVS / PRS disconnect cannot stall the OLED.
+  for (int n = 0; n < 2; n++) {
+    DecentCommand cmd;
+    portENTER_CRITICAL(&cmd_mux_);
+    if (cmd_count_ == 0) {
+      portEXIT_CRITICAL(&cmd_mux_);
+      return;
+    }
+    cmd = cmd_queue_[cmd_head_];
+    cmd_head_ = (cmd_head_ + 1) % kCmdQueue;
+    cmd_count_--;
+    portEXIT_CRITICAL(&cmd_mux_);
+    if (on_command_ && cmd.type != DecentCommand::Type::None) {
+      on_command_(cmd);
+    }
+  }
+}
+
+void BleDecent::disconnectPeer() {
+  if (!server) return;
+  const std::vector<uint16_t> peers = server->getPeerDevices();
+  for (uint16_t handle : peers) {
+    server->disconnect(handle);
   }
 }
 
@@ -202,10 +265,11 @@ void BleDecent::noteHeartbeat() {
 }
 
 void BleDecent::update() {
+  pumpCommands();
   if (connected_ && heartbeat_required_) {
     if (millis() - last_heartbeat_ms_ > kHeartbeatTimeoutMs) {
       Serial.println("[ble] heartbeat timeout — disconnect");
-      if (server) server->disconnect(0);
+      disconnectPeer();
       heartbeat_required_ = false;
     }
   }
