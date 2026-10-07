@@ -4,7 +4,7 @@
 
 // --- Product ---
 static constexpr const char* kProductName = "Flowlog Scale";
-static constexpr const char* kFirmwareVersion = "1.6.2";
+static constexpr const char* kFirmwareVersion = "1.6.3";
 
 // BLE still advertises as "Decent Scale" so Flowlog's existing pairing
 // (Decent-compatible FFF0/FFF4/36F5) discovers the device without app changes.
@@ -32,7 +32,13 @@ static constexpr const char* kApSsid = "HalfDecent-Setup";
 static constexpr const char* kApPassword = "scale1234";  // min 8 chars
 // Optional password for ArduinoOTA / web OTA (empty = open on LAN)
 static constexpr const char* kOtaPassword = "scaleota";
-static constexpr uint32_t kWifiConnectTimeoutMs = 25000;
+// Join only after a short directed scan sees the saved SSID. No AP fallback.
+static constexpr uint32_t kWifiConnectTimeoutMs = 12000;
+static constexpr uint32_t kWifiScanMsPerChan = 80;
+// Cold boot: hold Timer through this splash window to open the setup hotspot.
+static constexpr uint32_t kWifiSetupHoldMs = 1200;
+// If STA drops (left the house), turn WiFi off instead of reconnecting forever.
+static constexpr uint32_t kWifiStaGiveUpMs = 12000;
 
 // --- Sampling / UI ---
 static constexpr uint32_t kWeightNotifyHz = 10;

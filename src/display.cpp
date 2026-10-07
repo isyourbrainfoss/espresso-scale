@@ -38,7 +38,8 @@ void Display::showSplash() {
   u8g2.drawStr(20, 20, "Flowlog");
   u8g2.drawStr(28, 36, "Scale");
   u8g2.setFont(u8g2_font_5x8_tr);
-  u8g2.drawStr(36, 54, kFirmwareVersion);
+  u8g2.drawStr(44, 48, kFirmwareVersion);
+  u8g2.drawStr(16, 60, "hold Timer = WiFi");
   u8g2.sendBuffer();
 }
 

@@ -548,6 +548,7 @@ void handleSerial() {
         Serial.println("  Buttons: Tare short=zero, long=sleep");
         Serial.println("           Timer short=timer / confirm OK / stop brew");
         Serial.println("           Timer long=Start brew? prompt");
+        Serial.println("           Hold Timer through splash = WiFi setup AP");
         Serial.println("  prs|prs scan|prs off");
         Serial.println("  shot          - print last shot JSON length");
         Serial.println("  wifi / wifi set / wifi scan / wifi connect …");
@@ -607,6 +608,9 @@ void handleSerial() {
         wifi_ota.printStatus();
       } else if (serial_line.equalsIgnoreCase("wifi clear")) {
         wifi_ota.clearCredentials();
+        Serial.println(
+            "[wifi] credentials cleared. Radio stays off after reboot. "
+            "Hold Timer at boot, or send 'wifi ap', for setup.");
         delay(200);
         ESP.restart();
       } else if (serial_line.equalsIgnoreCase("wifi ap")) {
@@ -619,7 +623,7 @@ void handleSerial() {
         if (wifi_ota.tryConnectSaved()) {
           setStatus("WiFi OK", 2000);
         } else {
-          setStatus("WiFi fail->AP", 3000);
+          setStatus("WiFi off", 3000);
         }
         wifi_ota.printStatus();
       } else if (serial_line.startsWith("wifi set ")) {
@@ -727,6 +731,26 @@ String shotsListForHttp() { return shot_rec.listJson(); }
 
 String shotAtForHttp(size_t age) { return shot_rec.readSlotJson(age); }
 
+// Cold boot only. A deep-sleep wake leaves Timer or Tare high, and that
+// must not open the setup hotspot.
+bool setupHotspotRequested() {
+  const auto cause = esp_sleep_get_wakeup_cause();
+  if (cause == ESP_SLEEP_WAKEUP_EXT0 || cause == ESP_SLEEP_WAKEUP_EXT1 ||
+      cause == ESP_SLEEP_WAKEUP_TIMER) {
+    return false;
+  }
+  const uint32_t t0 = millis();
+  int high = 0;
+  int n = 0;
+  while (millis() - t0 < kWifiSetupHoldMs) {
+    if (digitalRead(PIN_BTN_TIMER) == HIGH) high++;
+    n++;
+    delay(40);
+  }
+  // Most of the splash, not a tap.
+  return n > 0 && high * 5 >= n * 4;
+}
+
 }  // namespace
 
 void setup() {
@@ -743,6 +767,7 @@ void setup() {
   Serial.println("Tare short = zero (beans safe). Tare long = sleep.");
   Serial.println("Timer short = kitchen timer. Timer long = Start brew?");
   Serial.println("  then Timer again = start (tare+PRS+REC), Tare = cancel.");
+  Serial.println("Hold Timer through the splash to open the WiFi setup hotspot.");
 
   buzzer.begin();
   buttons.begin();
@@ -756,16 +781,26 @@ void setup() {
     display.showSplash();
   }
 
+  // Decide WiFi before NimBLE starts. A missing home SSID must not scan or
+  // bring up the setup AP next to BLE — that is what rebooted the scale
+  // away from home.
+  const bool setup_ap = setupHotspotRequested();
+  {
+    DisplayState st{};
+    st.status = setup_ap ? "WiFi setup" : "Starting";
+    display.render(st);
+  }
+
   if (!scale.begin()) {
     Serial.println("[error] scale begin failed");
   }
 
+  wifi_ota.begin([]() { return scale.displayGrams(); }, shotJsonForHttp,
+                 hasShotForHttp, shotsListForHttp, shotAtForHttp, setup_ap);
+  wifi_ota.printStatus();
+
   ble.begin(handleBleCommand);
   prs.begin();
-
-  wifi_ota.begin([]() { return scale.displayGrams(); }, shotJsonForHttp,
-                 hasShotForHttp, shotsListForHttp, shotAtForHttp);
-  wifi_ota.printStatus();
   if (wifi_ota.isAccessPoint()) {
     setStatus("WiFi setup AP", 4000);
   } else if (wifi_ota.isStation()) {

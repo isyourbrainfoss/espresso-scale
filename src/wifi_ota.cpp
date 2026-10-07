@@ -345,6 +345,44 @@ void WifiOta::clearCredentials() {
   Serial.println("[wifi] credentials cleared");
 }
 
+void WifiOta::radioOff() {
+  stopServices();
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  mode_ = WifiMode::Off;
+  sta_lost_since_ms_ = 0;
+  Serial.println("[wifi] radio off — Bluetooth only");
+}
+
+bool WifiOta::savedSsidVisible(const String& ssid) {
+  // Directed scan, before BLE is up. If the home SSID is absent this returns
+  // in about a second instead of a 25s join that then starts the setup AP.
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false);
+  delay(40);
+  const int n = WiFi.scanNetworks(
+      /*async=*/false, /*show_hidden=*/true, /*passive=*/false,
+      kWifiScanMsPerChan, /*channel=*/0, ssid.c_str());
+  bool found = false;
+  if (n > 0) {
+    for (int i = 0; i < n; ++i) {
+      if (ssid == WiFi.SSID(i)) {
+        found = true;
+        Serial.printf("[wifi] saw \"%s\" ch=%d RSSI=%d\n",
+                      WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i));
+        break;
+      }
+    }
+  }
+  WiFi.scanDelete();
+  if (!found) {
+    Serial.printf("[wifi] saved \"%s\" not in range (scan=%d)\n", ssid.c_str(),
+                  n);
+  }
+  return found;
+}
+
 bool WifiOta::connectSta(const String& ssid, const String& pass) {
   mode_ = WifiMode::Connecting;
   ssid_ = ssid;
@@ -411,14 +449,15 @@ bool WifiOta::tryConnectSaved() {
   String ssid, pass;
   if (!loadCredentials(ssid, pass)) {
     Serial.println("[wifi] no saved credentials");
+    radioOff();
     return false;
   }
   stopServices();
-  if (connectSta(ssid, pass)) {
+  if (savedSsidVisible(ssid) && connectSta(ssid, pass)) {
     startServices();
     return true;
   }
-  startApPortal();
+  radioOff();
   return false;
 }
 
@@ -502,7 +541,7 @@ void WifiOta::end() {
 
 bool WifiOta::begin(WeightFn weight_fn, ShotJsonFn shot_json_fn,
                     HasShotFn has_shot_fn, ShotsListFn shots_list_fn,
-                    ShotAtFn shot_at_fn) {
+                    ShotAtFn shot_at_fn, bool force_setup_ap) {
   weight_fn_ = std::move(weight_fn);
   shot_json_fn_ = std::move(shot_json_fn);
   has_shot_fn_ = std::move(has_shot_fn);
@@ -516,16 +555,26 @@ bool WifiOta::begin(WeightFn weight_fn, ShotJsonFn shot_json_fn,
   g_shot_at = shot_at_fn_;
   WiFi.persistent(false);
 
-  String ssid, pass;
-  if (loadCredentials(ssid, pass)) {
-    if (connectSta(ssid, pass)) {
-      startServices();
-      return true;
-    }
-  } else {
-    Serial.println("[wifi] no saved credentials");
+  if (force_setup_ap) {
+    Serial.println("[wifi] setup hotspot requested");
+    startApPortal();
+    return true;
   }
-  startApPortal();
+
+  String ssid, pass;
+  if (!loadCredentials(ssid, pass)) {
+    Serial.println("[wifi] no saved credentials — radio off");
+    radioOff();
+    return true;
+  }
+  if (savedSsidVisible(ssid) && connectSta(ssid, pass)) {
+    startServices();
+    return true;
+  }
+  // Home network missing or join failed. Do not start the setup AP and do
+  // not keep scanning — that combination with BLE is what rebooted the scale
+  // away from home.
+  radioOff();
   return true;
 }
 
@@ -537,11 +586,16 @@ bool WifiOta::startSetupAp() {
 void WifiOta::update() {
   if (mode_ == WifiMode::Station && WiFi.status() != WL_CONNECTED) {
     const uint32_t now = millis();
-    if (now - last_reconnect_ms_ > 10000) {
-      last_reconnect_ms_ = now;
-      Serial.println("[wifi] STA lost — reconnecting");
-      WiFi.reconnect();
+    if (sta_lost_since_ms_ == 0) {
+      sta_lost_since_ms_ = now;
+      Serial.println("[wifi] STA lost — radio off if it stays down");
+    } else if (now - sta_lost_since_ms_ >= kWifiStaGiveUpMs) {
+      Serial.println("[wifi] STA still down — radio off until next boot");
+      radioOff();
+      return;
     }
+  } else if (mode_ == WifiMode::Station) {
+    sta_lost_since_ms_ = 0;
   }
   if (services_started_) {
     ArduinoOTA.handle();

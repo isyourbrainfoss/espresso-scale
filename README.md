@@ -4,12 +4,13 @@ Breadboard espresso scale firmware for **ESP32-S3 Super Mini** + HX711 + SSD1306
 
 Built as the **companion scale for [Flowlog](https://github.com/isyourbrainfoss/Flowlog)** using the public **Decent Scale BLE** protocol (device still advertises as `Decent Scale` so pairing stays unchanged).
 
-## Features (v1.6.2)
+## Features (v1.6.3)
 
-v1.6.2 keeps **grams as the primary OLED** during an app brew (no full-screen
-"App brew" overlay) and runs BLE command handling on the Arduino loop instead
-of the NimBLE host task, so a brew-start write burst is less likely to reboot
-the scale.
+v1.6.3 joins the saved home network only when that SSID is actually in range.
+Away from home the Wi‑Fi radio stays off (Bluetooth only) instead of hunting
+for 25 seconds and then starting the setup hotspot. Hold **Timer** through the
+splash on a cold boot to open the hotspot. v1.6.2 kept grams on the OLED during
+an app brew and moved BLE commands onto the Arduino loop.
 
 - Weight to 0.1 g (HX711 + 2 kg cell) with **auto-tare on boot**
 - **OLED**: weight + **pressure (bar)**, cup fill bar (target 36 g / warn 32 g), pressure bar 0–12 bar
@@ -52,9 +53,17 @@ ESP32-S3 Super Mini: hold **BOOT** if upload fails, then reset after flash. USB 
 
 After the first USB flash, the scale can join your LAN and accept updates without a cable.
 
-### First-time Wi‑Fi setup
+### When it joins Wi‑Fi
 
-If no credentials are stored (or join fails), the scale starts a setup access point:
+On a normal boot the scale scans briefly for the saved SSID.
+
+- **Home network in range:** it joins and serves **http://half-decent.local/** (or its DHCP IP).
+- **Not in range, or no credentials saved:** Wi‑Fi stays **off**. Bluetooth keeps working. It does not start a hotspot and it does not keep reconnecting.
+- **You walk out of range while it is on:** after about 12 seconds it turns Wi‑Fi off until the next boot.
+
+### Opening the setup hotspot
+
+The hotspot does not come on by itself.
 
 | | |
 |--|--|
@@ -62,17 +71,20 @@ If no credentials are stored (or join fails), the scale starts a setup access po
 | Password | `scale1234` |
 | Portal | http://192.168.4.1/ (or `/wifi`) |
 
-1. Join `HalfDecent-Setup` from your phone/laptop.
-2. Open the portal and enter your home Wi‑Fi SSID + password.
-3. The scale reboots, joins STA, and serves **http://half-decent.local/** (or its DHCP IP).
+1. Power on (not a deep-sleep wake) and **hold Timer** until the splash goes away. The splash says `hold Timer = WiFi`.
+2. Join `HalfDecent-Setup` from your phone or laptop.
+3. Open the portal and enter the home Wi‑Fi SSID + password.
+4. The scale reboots and joins that network if it is in range.
+
+Waking from sleep with Timer does **not** open the hotspot. The pad is still touched from the wake.
 
 **Serial alternative** (USB monitor):
 
 ```text
 wifi set MySSID MyPassword
 wifi              # status / IP
-wifi clear        # wipe creds → setup AP on reboot
 wifi ap           # force setup AP now
+wifi clear        # forget home Wi‑Fi (radio stays off after reboot)
 ```
 
 ### Status page

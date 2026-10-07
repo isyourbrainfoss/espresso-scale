@@ -26,10 +26,11 @@ class WifiOta {
   // Optional: GET /shot/<age>.json — age 0 = newest.
   using ShotAtFn = std::function<String(size_t age)>;
 
+  // force_setup_ap opens HalfDecent-Setup and does not try the home SSID.
   bool begin(WeightFn weight_fn = nullptr, ShotJsonFn shot_json_fn = nullptr,
              HasShotFn has_shot_fn = nullptr,
              ShotsListFn shots_list_fn = nullptr,
-             ShotAtFn shot_at_fn = nullptr);
+             ShotAtFn shot_at_fn = nullptr, bool force_setup_ap = false);
   void end();  // WiFi off before deep sleep
   void update();
 
@@ -68,10 +69,12 @@ class WifiOta {
   ShotsListFn shots_list_fn_;
   ShotAtFn shot_at_fn_;
   String ssid_;
-  uint32_t last_reconnect_ms_ = 0;
+  uint32_t sta_lost_since_ms_ = 0;
 
   bool loadCredentials(String& ssid, String& pass);
+  bool savedSsidVisible(const String& ssid);
   bool connectSta(const String& ssid, const String& pass);
+  void radioOff();
   void startApPortal();
   void startServices();  // mDNS, web, ArduinoOTA (once per mode)
   void stopServices();
