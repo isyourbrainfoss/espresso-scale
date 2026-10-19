@@ -3,6 +3,9 @@
 #include <Arduino.h>
 #include <functional>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+
 // Decent Scale BLE peripheral — Flowlog-compatible.
 // Device name: "Decent Scale"
 // Notify FFF4, write 36F5.
@@ -29,6 +32,7 @@ class BleDecent {
 
   bool begin(CommandHandler on_command);
   void end();  // stop BLE before deep sleep
+  // Call from loop(): runs heartbeat checks and dispatches queued commands.
   void update();
 
   bool isConnected() const { return connected_; }
@@ -58,6 +62,10 @@ class BleDecent {
 
  private:
   CommandHandler on_command_;
+  // Writes arrive on the NimBLE host task; commands are queued there and
+  // run on the Arduino loop task so tare (HX711), buzzer and deep sleep
+  // (which deinits NimBLE) never execute inside a BLE callback.
+  QueueHandle_t cmd_queue_ = nullptr;
   bool connected_ = false;
   bool advertising_ = false;
   bool app_mode_ = false;

@@ -40,6 +40,9 @@ uint8_t BleDecent::xor6(const uint8_t* b) {
 
 bool BleDecent::begin(CommandHandler on_command) {
   on_command_ = std::move(on_command);
+  if (cmd_queue_ == nullptr) {
+    cmd_queue_ = xQueueCreate(8, sizeof(DecentCommand));
+  }
   g_ble = this;
 
   NimBLEDevice::init(kBleDeviceName);
@@ -171,8 +174,9 @@ void BleDecent::onWrite(const uint8_t* data, size_t len) {
     return;
   }
 
-  if (on_command_ && cmd.type != DecentCommand::Type::None) {
-    on_command_(cmd);
+  if (cmd.type == DecentCommand::Type::None) return;
+  if (cmd_queue_ == nullptr || xQueueSend(cmd_queue_, &cmd, 0) != pdTRUE) {
+    Serial.println("[ble] command queue full — dropped");
   }
 }
 
@@ -181,6 +185,11 @@ void BleDecent::noteHeartbeat() {
 }
 
 void BleDecent::update() {
+  DecentCommand cmd;
+  while (cmd_queue_ != nullptr && xQueueReceive(cmd_queue_, &cmd, 0) == pdTRUE) {
+    if (on_command_) on_command_(cmd);
+    if (g_ble == nullptr) return;  // handler ended BLE (deep sleep)
+  }
   if (connected_ && heartbeat_required_) {
     if (millis() - last_heartbeat_ms_ > kHeartbeatTimeoutMs) {
       Serial.println("[ble] heartbeat timeout — disconnect");
