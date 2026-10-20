@@ -47,6 +47,15 @@ void Display::render(const DisplayState& s) {
 
   u8g2.clearBuffer();
 
+  if (s.info[0] != nullptr) {
+    u8g2.setFont(u8g2_font_6x12_tr);
+    for (int i = 0; i < 5 && s.info[i] != nullptr; ++i) {
+      u8g2.drawStr(0, 11 + i * 13, s.info[i]);
+    }
+    u8g2.sendBuffer();
+    return;
+  }
+
   if (s.status != nullptr) {
     u8g2.setFont(u8g2_font_6x12_tr);
     u8g2.drawStr(0, 28, s.status);

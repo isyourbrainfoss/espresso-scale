@@ -46,19 +46,41 @@ ESP32-S3 Super Mini: hold **BOOT** if upload fails, then reset after flash. USB 
 
 After the first USB flash, the scale can join your LAN and accept updates without a cable.
 
+### Device password
+
+There are **no default passwords**. On first boot the scale generates a random
+12-character **device password** and stores it in flash (NVS). It is used for:
+
+- the setup access point (WPA2 key),
+- the web UI (HTTP Digest login, user **`scale`**),
+- PlatformIO / ArduinoOTA uploads.
+
+To see it, **hold Timer for ~5 s** (keep holding past the ~1 s timer reset):
+the OLED shows the password, web user and IP for 60 s. Over USB serial,
+`wifi pass` shows it on the OLED too (it is only printed to serial if the OLED
+is not working). Logs only ever show a masked form such as `ab********yz`.
+`wifi pass reset` (USB serial) generates a new one and reboots.
+
 ### First-time Wi‑Fi setup
 
-If no credentials are stored (or join fails), the scale starts a setup access point:
+On first boot (or after `wifi clear`), with no saved network, the scale opens a
+setup access point and shows its details on the OLED:
 
 | | |
 |--|--|
-| SSID | `HalfDecent-Setup` |
-| Password | `scale1234` |
-| Portal | http://192.168.4.1/ (or `/wifi`) |
+| SSID | `HalfDecent-XXXX` (last 4 hex digits of the MAC) |
+| Password | the device password (on the OLED) |
+| Portal | http://192.168.4.1/ (or `/wifi`), login `scale` + device password |
 
-1. Join `HalfDecent-Setup` from your phone/laptop.
-2. Open the portal and enter your home Wi‑Fi SSID + password.
+1. Join the AP from your phone/laptop.
+2. Open the portal, log in, and enter your home Wi‑Fi SSID + password
+   (SSID up to 32 bytes; password 8–63 characters, or empty for an open network).
 3. The scale reboots, joins STA, and serves **http://half-decent.local/** (or its DHCP IP).
+
+The setup AP closes after 10 minutes with nobody connected. It does **not**
+open automatically when a saved network is unreachable; the scale keeps
+retrying that network instead. To open it again, **hold Timer ~5 s** while not
+connected to Wi‑Fi, or use `wifi ap` on serial.
 
 **Serial alternative** (USB monitor):
 
@@ -66,36 +88,54 @@ If no credentials are stored (or join fails), the scale starts a setup access po
 wifi set MySSID MyPassword
 wifi              # status / IP
 wifi clear        # wipe creds → setup AP on reboot
-wifi ap           # force setup AP now
+wifi ap           # open setup AP now
+wifi pass         # show device password on the OLED
 ```
 
 ### Status page
 
-On the LAN: **http://half-decent.local/** (or `http://<ip>/`)
+On the LAN: **http://half-decent.local/** (or `http://<ip>/`), login `scale` + device password.
 
 - Live weight snapshot  
 - Links to **Wi‑Fi setup** and **OTA update**  
 
+All pages need the login. Form submissions (Wi‑Fi settings, firmware upload)
+also need a one-time token from the form and a same-origin `Origin`/`Referer`
+header, so other websites cannot submit them through your browser.
+
 OLED shows a small `WiFi` or `AP` label when wireless is up.
+
+> The web UI is plain HTTP on your LAN. Digest auth keeps the password off the
+> wire, but traffic is not encrypted. Firmware images are not signed yet (see
+> below).
 
 ### OTA update (PlatformIO)
 
-Password is `scaleota` (change in `include/config.h` → `kOtaPassword`).
+Use the device password via an environment variable (nothing is stored in the repo):
 
 ```bash
 # Discover IP from serial ("wifi") or the status page, then:
-pio run -t upload -e ota --upload-port 192.168.1.50
+SCALE_OTA_PASSWORD=xxxxxxxxxxxx pio run -t upload -e ota --upload-port 192.168.1.50
 
 # If mDNS works on your OS:
-pio run -t upload -e ota --upload-port half-decent.local
+SCALE_OTA_PASSWORD=xxxxxxxxxxxx pio run -t upload -e ota --upload-port half-decent.local
 ```
 
 ### OTA update (browser)
 
 1. Build: `pio run`
-2. Open **http://half-decent.local/update**
+2. Open **http://half-decent.local/update** and log in
 3. Upload `.pio/build/esp32-s3-super-mini/firmware.bin`
 4. Wait for reboot
+
+### Firmware signing (not yet)
+
+OTA images are authenticated only by the device password, not by a signature.
+Signed updates (`Update.installSignature()` with an RSA/ECDSA public key) exist
+only in arduino-esp32 **3.3.8+** (earlier 3.x releases had a verification
+bypass). This project builds on PlatformIO's `espressif32` platform, which
+ships arduino-esp32 2.0.17 without that API, so signing would mean moving to
+the pioarduino platform / core 3.x first. That is a follow-up.
 
 During OTA the OLED shows `OTA...`. Prefer not to pour a shot mid-update.
 
@@ -108,6 +148,7 @@ During OTA the OLED shows `OTA...`. Prefer not to pour a shot mid-update.
 | **Wake** | Touch **Tare** or **Timer** (full cold start + auto-tare + Wi‑Fi) |
 | Start/stop timer | Timer short press |
 | Reset timer | Timer long press (~1 s) |
+| **Wi‑Fi password / setup AP** | Keep holding Timer to **~5 s**: shows device password (on Wi‑Fi) or opens the setup AP |
 | Calibration mode | Hold **both** ~3 s |
 
 Optional auto-start: timer starts when weight rises past 0.5 g after a tare (see `include/config.h`).

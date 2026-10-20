@@ -11,11 +11,21 @@ static constexpr const char* kFirmwareVersion = "1.3.0";
 static constexpr const char* kBleDeviceName = "Decent Scale";
 
 // WiFi / OTA
+// There are no hard-coded passwords. On first boot the scale generates a
+// random per-device password (stored in NVS) that protects the web UI
+// (HTTP Digest auth), ArduinoOTA and the setup access point (WPA2).
+// It is shown on the OLED, never printed in full to serial.
 static constexpr const char* kHostname = "half-decent";
-static constexpr const char* kApSsid = "HalfDecent-Setup";
-static constexpr const char* kApPassword = "scale1234";  // min 8 chars
-// Optional password for ArduinoOTA / web OTA (empty = open on LAN)
-static constexpr const char* kOtaPassword = "scaleota";
+// Setup AP SSID = prefix + last 4 hex digits of the MAC, e.g. HalfDecent-1A2B
+static constexpr const char* kApSsidPrefix = "HalfDecent-";
+// HTTP Digest username for the web UI (password = device password).
+static constexpr const char* kWebUser = "scale";
+static constexpr const char* kWebRealm = "Half Decent Scale";
+static constexpr size_t kDevicePasswordLen = 12;  // ~60 bits, 32-symbol alphabet
+// Setup AP closes after this long with no station connected to it.
+static constexpr uint32_t kSetupApTimeoutMs = 10UL * 60UL * 1000UL;
+// How long the OLED shows the device password after a request.
+static constexpr uint32_t kShowPasswordMs = 60UL * 1000UL;
 static constexpr uint32_t kWifiConnectTimeoutMs = 25000;
 
 // --- Sampling / UI ---
@@ -39,6 +49,8 @@ static constexpr float kAutoTimerNearZeroG = 0.3f;
 static constexpr uint32_t kBtnDebounceMs = 30;
 static constexpr uint32_t kBtnLongPressMs = 1000;
 static constexpr uint32_t kBtnBothHoldCalMs = 3000;
+// Hold Timer this long: show device password (on Wi-Fi) or start setup AP.
+static constexpr uint32_t kBtnVeryLongPressMs = 5000;
 
 // Calibration
 static constexpr float kDefaultCalMassG = 100.0f;

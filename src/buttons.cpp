@@ -59,11 +59,19 @@ BtnEvent Buttons::poll() {
     timer_down_ = true;
     timer_down_ms_ = now;
     timer_long_consumed_ = false;
+    timer_vlong_consumed_ = false;
   } else if (timer && !tare && timer_down_ && !timer_long_consumed_ &&
              !both_fired_) {
     if (now - timer_down_ms_ >= kBtnLongPressMs) {
       timer_long_consumed_ = true;
       return BtnEvent::TimerLong;
+    }
+  } else if (timer && !tare && timer_down_ && timer_long_consumed_ &&
+             !timer_vlong_consumed_ && !both_fired_) {
+    // Keep holding past the long press (timer reset) -> very long press.
+    if (now - timer_down_ms_ >= kBtnVeryLongPressMs) {
+      timer_vlong_consumed_ = true;
+      return BtnEvent::TimerVeryLong;
     }
   } else if (!timer && timer_down_) {
     const uint32_t held = now - timer_down_ms_;

@@ -16,6 +16,9 @@ struct DisplayState {
   bool ota_active = false;
   const char* battery_label = nullptr;  // "USB" or "87%"
   bool standby = false;
+  // Full-screen info page (e.g. Wi-Fi setup AP / device password) when
+  // info[0] is set; up to 5 lines of ~21 chars.
+  const char* info[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
 };
 
 class Display {
@@ -25,6 +28,7 @@ class Display {
   void render(const DisplayState& s);
   void setPowerSave(bool on);  // OLED off for standby
   bool powerSave() const { return power_save_; }
+  bool ready() const { return ready_; }
 
  private:
   bool ready_ = false;

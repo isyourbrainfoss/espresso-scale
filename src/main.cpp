@@ -46,6 +46,44 @@ uint32_t last_weight_change_ms = 0;
 
 String serial_line;
 
+// OLED page with Wi-Fi setup details / device password.
+bool show_password = false;
+uint32_t show_password_until_ms = 0;
+String info_lines[5];
+
+void showPassword(uint32_t ms = kShowPasswordMs) {
+  show_password = true;
+  show_password_until_ms = millis() + ms;
+}
+
+// Fills st.info for kShowPasswordMs after the setup AP opens or the user asks
+// (Timer ~5 s / serial "wifi pass"); the normal weight screen otherwise.
+void fillWifiInfo(DisplayState& st, uint32_t now) {
+  if (!show_password) return;
+  if (static_cast<int32_t>(show_password_until_ms - now) <= 0) {
+    show_password = false;
+    return;
+  }
+  if (wifi_ota.devicePassword().isEmpty()) return;
+  if (wifi_ota.isAccessPoint()) {
+    info_lines[0] = "Wi-Fi setup: join";
+    info_lines[1] = wifi_ota.apSsid();
+    info_lines[2] = "pw " + wifi_ota.devicePassword();
+    info_lines[3] = "http://" + wifi_ota.ipString();
+    info_lines[4] = "login: scale / pw";
+  } else {
+    info_lines[0] = "Device password";
+    info_lines[1] = wifi_ota.devicePassword();
+    info_lines[2] = "web user: scale";
+    String ip = wifi_ota.ipString();
+    info_lines[3] = ip.length() ? "http://" + ip : String("Wi-Fi not connected");
+    info_lines[4] = "";
+  }
+  for (int i = 0; i < 5; ++i) {
+    st.info[i] = info_lines[i].length() ? info_lines[i].c_str() : nullptr;
+  }
+}
+
 void setStatus(const char* msg, uint32_t ms = 2000) {
   status_msg = msg;
   status_until_ms = millis() + ms;
@@ -231,6 +269,19 @@ void handleButton(BtnEvent ev) {
       doTimerReset();
       ble.notifyButton(2, 2);
       break;
+    case BtnEvent::TimerVeryLong:
+      // Connected to Wi-Fi: just show the password (for web UI / OTA).
+      // Otherwise open the setup AP (closes itself when idle) and show it.
+      if (!wifi_ota.isStation()) {
+        if (wifi_ota.startSetupAp()) {
+          setStatus("WiFi setup AP", 2000);
+        } else {
+          setStatus("WiFi AP failed", 3000);
+        }
+      }
+      showPassword();
+      buzzer.successChime();
+      break;
     case BtnEvent::BothHeldCal:
       enterCalMode();
       break;
@@ -254,7 +305,10 @@ void handleSerial() {
         Serial.println("  help / tare / weight / factor / cal …");
         Serial.println("  sleep         - deep sleep (touch button to wake)");
         Serial.println("  battery");
-        Serial.println("  wifi / wifi set / wifi scan / wifi connect …");
+        Serial.println("  wifi / wifi set / wifi scan / wifi connect / wifi ap");
+        Serial.println("  wifi pass       - show device password on the OLED");
+        Serial.println("  wifi pass reset - generate a new device password + reboot");
+        Serial.println("  (hold Timer ~5 s: show password / start setup AP)");
       } else if (serial_line.equalsIgnoreCase("tare")) {
         doTare(false);
       } else if (serial_line.equalsIgnoreCase("sleep")) {
@@ -286,8 +340,27 @@ void handleSerial() {
         delay(200);
         ESP.restart();
       } else if (serial_line.equalsIgnoreCase("wifi ap")) {
-        wifi_ota.startSetupAp();
-        setStatus("WiFi AP mode", 3000);
+        if (wifi_ota.startSetupAp()) {
+          setStatus("WiFi AP mode", 3000);
+          showPassword();
+        }
+      } else if (serial_line.equalsIgnoreCase("wifi pass")) {
+        if (display.ready()) {
+          showPassword();
+          Serial.println("Device password shown on the OLED for 60 s.");
+        } else {
+          // Headless fallback only (no OLED): explicit request over USB.
+          Serial.printf("OLED unavailable. Device password: %s\n",
+                        wifi_ota.devicePassword().c_str());
+        }
+      } else if (serial_line.equalsIgnoreCase("wifi pass reset")) {
+        if (wifi_ota.regeneratePassword()) {
+          Serial.println("New device password stored — rebooting…");
+          delay(300);
+          ESP.restart();
+        } else {
+          Serial.println("Could not store a new password.");
+        }
       } else if (serial_line.equalsIgnoreCase("wifi scan")) {
         wifi_ota.scanNetworks();
       } else if (serial_line.equalsIgnoreCase("wifi connect")) {
@@ -295,7 +368,7 @@ void handleSerial() {
         if (wifi_ota.tryConnectSaved()) {
           setStatus("WiFi OK", 2000);
         } else {
-          setStatus("WiFi fail->AP", 3000);
+          setStatus("WiFi retrying", 3000);
         }
         wifi_ota.printStatus();
       } else if (serial_line.startsWith("wifi set ")) {
@@ -323,8 +396,10 @@ void handleSerial() {
           pass = rest.substring(sp + 1);
           pass.trim();
         }
-        if (!ssid.isEmpty()) {
-          wifi_ota.saveCredentials(ssid, pass);
+        const char* why = nullptr;
+        if (!WifiOta::validateCredentials(ssid, pass, &why)) {
+          Serial.printf("Not saved: %s\n", why);
+        } else if (wifi_ota.saveCredentials(ssid, pass)) {
           Serial.printf("Saved SSID \"%s\" — rebooting…\n", ssid.c_str());
           delay(300);
           ESP.restart();
@@ -335,7 +410,7 @@ void handleSerial() {
       serial_line = "";
     } else {
       serial_line += c;
-      if (serial_line.length() > 80) serial_line = "";
+      if (serial_line.length() > 128) serial_line = "";  // fits "wifi set" + 32 + 63
     }
   }
 }
@@ -398,7 +473,7 @@ void setup() {
   wifi_ota.begin([]() { return scale.displayGrams(); });
   wifi_ota.printStatus();
   if (wifi_ota.isAccessPoint()) {
-    setStatus("WiFi setup AP", 4000);
+    showPassword();  // first boot: AP name + password on the OLED for 60 s
   } else if (wifi_ota.isStation()) {
     setStatus("WiFi OK", 2000);
   }
@@ -455,6 +530,7 @@ void loop() {
     st.ota_active = wifi_ota.otaInProgress();
     st.battery_label = battery.label();
     st.standby = false;
+    fillWifiInfo(st, now);
     if (status_msg && now < status_until_ms) {
       st.status = status_msg;
     } else {

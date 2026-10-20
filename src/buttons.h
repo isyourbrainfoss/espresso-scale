@@ -8,6 +8,7 @@ enum class BtnEvent : uint8_t {
   TareLong,  // standby toggle
   TimerShort,
   TimerLong,
+  TimerVeryLong,  // held kBtnVeryLongPressMs: Wi-Fi password / setup AP
   BothHeldCal,
 };
 
@@ -26,6 +27,7 @@ class Buttons {
   bool both_fired_ = false;
   bool tare_long_consumed_ = false;
   bool timer_long_consumed_ = false;
+  bool timer_vlong_consumed_ = false;
 
   bool readTare() const;
   bool readTimer() const;
