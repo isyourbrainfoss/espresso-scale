@@ -41,9 +41,10 @@ uint8_t BleDecent::xor6(const uint8_t* b) {
 bool BleDecent::begin(CommandHandler on_command) {
   on_command_ = std::move(on_command);
   if (cmd_queue_ == nullptr) {
-    cmd_queue_ = xQueueCreate(8, sizeof(DecentCommand));
+    cmd_queue_ = xQueueCreate(kCmdQueueDepth, sizeof(DecentCommand));
   }
   g_ble = this;
+  stopping_ = false;
 
   NimBLEDevice::init(kBleDeviceName);
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
@@ -80,8 +81,19 @@ void BleDecent::startAdvertising() {
 }
 
 void BleDecent::end() {
+  stopping_ = true;
   if (server) {
     NimBLEDevice::getAdvertising()->stop();
+    if (connected_) {
+      // notify() only hands the packet to the NimBLE host; give it time to go
+      // out on the next connection event(s) before we disconnect/deinit.
+      delay(150);
+      for (uint16_t handle : server->getPeerDevices()) {
+        server->disconnect(handle);
+      }
+      const uint32_t t0 = millis();
+      while (connected_ && millis() - t0 < 500) delay(10);
+    }
   }
   NimBLEDevice::deinit(true);
   connected_ = false;
@@ -110,6 +122,10 @@ void BleDecent::onDisconnect() {
   app_mode_ = false;
   notify_enabled_ = false;
   heartbeat_required_ = false;
+  if (stopping_) {
+    Serial.println("[ble] disconnected");
+    return;
+  }
   Serial.println("[ble] disconnected — re-advertising");
   startAdvertising();
 }
@@ -142,8 +158,11 @@ void BleDecent::onWrite(const uint8_t* data, size_t len) {
     }
   } else if (type == 0x0A) {
     if (d0 == 0x03 && d1 == 0xFF && d2 == 0xFF) {
-      cmd.type = DecentCommand::Type::Heartbeat;
+      // Heartbeat: only refreshes a timestamp, so handle it here and do not
+      // queue it (Flowlog sends one every few seconds; queuing them could
+      // fill the queue and drop tare/timer commands if loop() is blocked).
       noteHeartbeat();
+      return;
     } else if (d0 == 0x02) {
       cmd.type = DecentCommand::Type::PowerOff;
     } else if (d0 == 0x00) {
@@ -191,7 +210,10 @@ void BleDecent::update() {
     if (g_ble == nullptr) return;  // handler ended BLE (deep sleep)
   }
   if (connected_ && heartbeat_required_) {
-    if (millis() - last_heartbeat_ms_ > kHeartbeatTimeoutMs) {
+    // Load the timestamp before millis(): the BLE task may refresh it at any
+    // time, and reading it after `now` could make (now - last) wrap around.
+    const uint32_t last = last_heartbeat_ms_.load();
+    if (millis() - last > kHeartbeatTimeoutMs) {
       Serial.println("[ble] heartbeat timeout — disconnect");
       if (server) server->disconnect(0);
       heartbeat_required_ = false;
