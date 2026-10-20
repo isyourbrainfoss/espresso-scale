@@ -9,6 +9,7 @@ enum class BtnEvent : uint8_t {
   TimerShort,
   TimerLong,
   BothHeldCal,
+  TimerSetupHold,  // Timer alone held kBtnSetupHoldMs: password / setup AP
 };
 
 class Buttons {
@@ -26,6 +27,7 @@ class Buttons {
   bool both_fired_ = false;
   bool tare_long_consumed_ = false;
   bool timer_long_consumed_ = false;
+  bool timer_setup_consumed_ = false;
 
   bool readTare() const;
   bool readTimer() const;

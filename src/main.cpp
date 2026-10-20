@@ -8,6 +8,7 @@
 #include "buttons.h"
 #include "buzzer.h"
 #include "config.h"
+#include "device_auth.h"
 #include "display.h"
 #include "pins.h"
 #include "scale.h"
@@ -234,6 +235,18 @@ void handleButton(BtnEvent ev) {
     case BtnEvent::BothHeldCal:
       enterCalMode();
       break;
+    case BtnEvent::TimerSetupHold:
+      // Physical-access gesture: show the device password; if not on a
+      // LAN (or the password screen is already up), open the setup AP.
+      buzzer.successChime();
+      if (wifi_ota.isAccessPoint()) {
+        wifi_ota.requestSetupScreen();
+      } else if (wifi_ota.isStation() && !wifi_ota.setupScreenActive()) {
+        wifi_ota.requestSetupScreen();
+      } else {
+        wifi_ota.startSetupAp();
+      }
+      break;
     default:
       break;
   }
@@ -254,7 +267,9 @@ void handleSerial() {
         Serial.println("  help / tare / weight / factor / cal …");
         Serial.println("  sleep         - deep sleep (touch button to wake)");
         Serial.println("  battery");
-        Serial.println("  wifi / wifi set / wifi scan / wifi connect …");
+        Serial.println("  wifi / wifi set / wifi scan / wifi connect / wifi ap / wifi clear");
+        Serial.println("  auth show     - show device password on the OLED");
+        Serial.println("  auth reset    - new random device password (reboots)");
       } else if (serial_line.equalsIgnoreCase("tare")) {
         doTare(false);
       } else if (serial_line.equalsIgnoreCase("sleep")) {
@@ -285,6 +300,15 @@ void handleSerial() {
         wifi_ota.clearCredentials();
         delay(200);
         ESP.restart();
+      } else if (serial_line.equalsIgnoreCase("auth show")) {
+        // Shown on the OLED only (not echoed to the serial log).
+        wifi_ota.requestSetupScreen();
+        Serial.println("[auth] device password shown on the OLED for 60 s");
+      } else if (serial_line.equalsIgnoreCase("auth reset")) {
+        device_auth::reset();
+        Serial.println("[auth] password erased — new one generated on reboot");
+        delay(200);
+        ESP.restart();
       } else if (serial_line.equalsIgnoreCase("wifi ap")) {
         wifi_ota.startSetupAp();
         setStatus("WiFi AP mode", 3000);
@@ -295,7 +319,7 @@ void handleSerial() {
         if (wifi_ota.tryConnectSaved()) {
           setStatus("WiFi OK", 2000);
         } else {
-          setStatus("WiFi fail->AP", 3000);
+          setStatus("WiFi fail", 3000);
         }
         wifi_ota.printStatus();
       } else if (serial_line.startsWith("wifi set ")) {
@@ -323,8 +347,10 @@ void handleSerial() {
           pass = rest.substring(sp + 1);
           pass.trim();
         }
-        if (!ssid.isEmpty()) {
-          wifi_ota.saveCredentials(ssid, pass);
+        String err;
+        if (!WifiOta::validateCredentials(ssid, pass, &err)) {
+          Serial.printf("Not saved: %s\n", err.c_str());
+        } else if (wifi_ota.saveCredentials(ssid, pass)) {
           Serial.printf("Saved SSID \"%s\" — rebooting…\n", ssid.c_str());
           delay(300);
           ESP.restart();
@@ -335,7 +361,7 @@ void handleSerial() {
       serial_line = "";
     } else {
       serial_line += c;
-      if (serial_line.length() > 80) serial_line = "";
+      if (serial_line.length() > 128) serial_line = "";
     }
   }
 }
@@ -402,6 +428,7 @@ void setup() {
   } else if (wifi_ota.isStation()) {
     setStatus("WiFi OK", 2000);
   }
+  if (wifi_ota.setupScreenActive()) status_msg = nullptr;  // show password
 
   buzzer.bootChime();
   auto_armed = true;  // boot tare already zeroed platform
@@ -455,6 +482,16 @@ void loop() {
     st.ota_active = wifi_ota.otaInProgress();
     st.battery_label = battery.label();
     st.standby = false;
+    String setup_ip;
+    if (wifi_ota.setupScreenActive()) {
+      st.setup_screen = true;
+      st.setup_ap = wifi_ota.isAccessPoint();
+      st.setup_ssid = st.setup_ap ? device_auth::apSsid().c_str() : kHostname;
+      st.setup_pass = device_auth::password().c_str();
+      setup_ip = wifi_ota.ipString();
+      st.setup_ip = setup_ip.c_str();
+      st.setup_secs_left = wifi_ota.apSecondsLeft();
+    }
     if (status_msg && now < status_until_ms) {
       st.status = status_msg;
     } else {

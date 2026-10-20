@@ -12,10 +12,21 @@ static constexpr const char* kBleDeviceName = "Decent Scale";
 
 // WiFi / OTA
 static constexpr const char* kHostname = "half-decent";
-static constexpr const char* kApSsid = "HalfDecent-Setup";
-static constexpr const char* kApPassword = "scale1234";  // min 8 chars
-// Optional password for ArduinoOTA / web OTA (empty = open on LAN)
-static constexpr const char* kOtaPassword = "scaleota";
+// Setup AP SSID is "<prefix>-XXXX" (last two MAC bytes). There are no
+// compiled-in passwords: the setup AP, web UI and ArduinoOTA all use a
+// per-device random password generated on first boot and stored in NVS
+// (see src/device_auth.*). It is shown on the OLED.
+static constexpr const char* kApSsidPrefix = "HalfDecent";
+// Setup AP closes after this long with no connected client / HTTP request.
+static constexpr uint32_t kSetupApIdleTimeoutMs = 10UL * 60UL * 1000UL;
+// How long the OLED shows the setup / password screen once triggered.
+static constexpr uint32_t kSetupScreenMs = 60UL * 1000UL;
+// Background STA retry period when the saved network is unreachable
+// (the setup AP is NOT opened automatically on Wi-Fi failure).
+static constexpr uint32_t kWifiRetryIntervalMs = 30000;
+// Web UI brute-force throttle.
+static constexpr uint8_t kAuthMaxFailures = 5;
+static constexpr uint32_t kAuthLockoutMs = 60000;
 static constexpr uint32_t kWifiConnectTimeoutMs = 25000;
 
 // --- Sampling / UI ---
@@ -39,6 +50,8 @@ static constexpr float kAutoTimerNearZeroG = 0.3f;
 static constexpr uint32_t kBtnDebounceMs = 30;
 static constexpr uint32_t kBtnLongPressMs = 1000;
 static constexpr uint32_t kBtnBothHoldCalMs = 3000;
+// Hold Timer alone this long: show device password / open Wi-Fi setup AP.
+static constexpr uint32_t kBtnSetupHoldMs = 5000;
 
 // Calibration
 static constexpr float kDefaultCalMassG = 100.0f;

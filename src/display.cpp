@@ -54,6 +54,37 @@ void Display::render(const DisplayState& s) {
     return;
   }
 
+  if (s.setup_screen && !s.ota_active) {
+    char line[40];
+    u8g2.setFont(u8g2_font_6x12_tr);
+    u8g2.drawStr(0, 10, s.setup_ap ? "Wi-Fi setup AP" : "Device password");
+    u8g2.setFont(u8g2_font_5x8_tr);
+    if (s.setup_ssid) {
+      snprintf(line, sizeof(line), "%s%s", s.setup_ap ? "SSID " : "Host ",
+               s.setup_ssid);
+      u8g2.drawStr(0, 22, line);
+    }
+    u8g2.setFont(u8g2_font_6x12_tr);
+    if (s.setup_pass) {
+      snprintf(line, sizeof(line), "%s", s.setup_pass);
+      u8g2.drawStr(0, 36, line);
+    }
+    u8g2.setFont(u8g2_font_5x8_tr);
+    if (s.setup_ip && s.setup_ip[0]) {
+      snprintf(line, sizeof(line), "http://%s", s.setup_ip);
+      u8g2.drawStr(0, 50, line);
+    }
+    if (s.setup_ap) {
+      snprintf(line, sizeof(line), "user admin  %lum left",
+               static_cast<unsigned long>((s.setup_secs_left + 59) / 60));
+    } else {
+      snprintf(line, sizeof(line), "user admin / OTA pass");
+    }
+    u8g2.drawStr(0, 62, line);
+    u8g2.sendBuffer();
+    return;
+  }
+
   if (!s.scale_ok) {
     u8g2.setFont(u8g2_font_6x12_tr);
     u8g2.drawStr(8, 32, "HX711 not ready");
