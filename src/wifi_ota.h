@@ -17,8 +17,20 @@ class WifiOta {
  public:
   // Optional: latest weight for status page (set each notify tick).
   using WeightFn = std::function<float()>;
+  // Optional: last shot JSON for GET /shot.json (empty when none).
+  using ShotJsonFn = std::function<String()>;
+  // Optional: true when a standalone/phone shot is available for export.
+  using HasShotFn = std::function<bool()>;
+  // Optional: GET /shots.json list metadata.
+  using ShotsListFn = std::function<String()>;
+  // Optional: GET /shot/<age>.json — age 0 = newest.
+  using ShotAtFn = std::function<String(size_t age)>;
 
-  bool begin(WeightFn weight_fn = nullptr);
+  // force_setup_ap opens HalfDecent-Setup and does not try the home SSID.
+  bool begin(WeightFn weight_fn = nullptr, ShotJsonFn shot_json_fn = nullptr,
+             HasShotFn has_shot_fn = nullptr,
+             ShotsListFn shots_list_fn = nullptr,
+             ShotAtFn shot_at_fn = nullptr, bool force_setup_ap = false);
   void end();  // WiFi off before deep sleep
   void update();
 
@@ -40,15 +52,29 @@ class WifiOta {
   void scanNetworks();  // print 2.4 GHz scan to serial
   bool tryConnectSaved();  // re-attempt STA with NVS creds
 
+  // Optional Nextcloud WebDAV: PUT last_shot.json after a brew.
+  bool saveNextcloud(const String& base_url, const String& user,
+                     const String& pass, const String& remote_path);
+  void clearNextcloud();
+  bool hasNextcloud() const;
+  // Best-effort upload of current shot JSON. Returns true on HTTP 2xx.
+  bool pushShotToNextcloud(const String& json);
+
  private:
   WifiMode mode_ = WifiMode::Off;
   bool ota_active_ = false;
   WeightFn weight_fn_;
+  ShotJsonFn shot_json_fn_;
+  HasShotFn has_shot_fn_;
+  ShotsListFn shots_list_fn_;
+  ShotAtFn shot_at_fn_;
   String ssid_;
-  uint32_t last_reconnect_ms_ = 0;
+  uint32_t sta_lost_since_ms_ = 0;
 
   bool loadCredentials(String& ssid, String& pass);
+  bool savedSsidVisible(const String& ssid);
   bool connectSta(const String& ssid, const String& pass);
+  void radioOff();
   void startApPortal();
   void startServices();  // mDNS, web, ArduinoOTA (once per mode)
   void stopServices();

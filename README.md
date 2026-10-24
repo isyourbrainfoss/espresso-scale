@@ -1,22 +1,32 @@
-# Half Decent Espresso Scale
+# Flowlog Scale (espresso-scale)
 
 > **Note**
 > This is very experimental. Assume nothing here is written, or necessarily read through or fully understood, by a human unless stated, and that includes this text. Use it at your own risk, but you're encouraged to reuse any parts you find useful. The human work here is mainly ideas, testing in reality, and persistence with a vision.
 
 Breadboard espresso scale firmware for **ESP32-S3 Super Mini** + HX711 + SSD1306.
 
-Built to work with **[Flowlog](https://github.com/isyourbrainfoss/Flowlog)** via the public **Decent Scale BLE** protocol (device name `Decent Scale`).
+Built as the **companion scale for [Flowlog](https://github.com/isyourbrainfoss/Flowlog)** using the public **Decent Scale BLE** protocol (device still advertises as `Decent Scale` so pairing stays unchanged).
 
-## Features (v1.2)
+## Features (v1.6.3)
+
+v1.6.3 joins the saved home network only when that SSID is actually in range.
+Away from home the Wi‑Fi radio stays off (Bluetooth only) instead of hunting
+for 25 seconds and then starting the setup hotspot. Hold **Timer** through the
+splash on a cold boot to open the hotspot. v1.6.2 kept grams on the OLED during
+an app brew and moved BLE commands onto the Arduino loop.
 
 - Weight to 0.1 g (HX711 + 2 kg cell) with **auto-tare on boot**
-- Tare + shot timer + flow rate (g/s) on OLED
+- **OLED**: weight + **pressure (bar)**, cup fill bar (target 36 g / warn 32 g), pressure bar 0–12 bar
+- Flow rate (g/s)
+- **Phone-free brew**: **long-press Timer** → OLED “Start brew?” → **Timer** to confirm (tare + PRS + record) or **Tare** to cancel. Short Timer is kitchen timer only; Tare short always zeros for dosing beans
+- **App brew pressure forward**: Flowlog writes type `0xF0` so the scale shows bar while the phone keeps PRS
+- **Shot export**: last **3** phone-free shots on SPIFFS; `GET /shots.json`, `/shot.json` (newest), `/shot/0|1|2.json`; Flowlog History → Import (Wi‑Fi IP or **Bluetooth**); optional Nextcloud WebDAV push
+- BLE weight stream whenever a phone is connected (not only after LED-on)
 - Softer multi-note buzzer cues
-- **Deep sleep**: long-press Tare → radios/OLED/HX711 off; **touch Tare or Timer** to wake (full reboot)
-- Battery / **USB** indicator on OLED (ADC optional for real %)
-- Calibration stored in NVS
-- BLE: Decent Scale API (FFF4 notify, 36F5 write, 10 Hz weight, heartbeat)
-- **Wi‑Fi** with setup AP + status page + **OTA** (ArduinoOTA + browser upload)
+- **Deep sleep**: long-press Tare → radios/OLED/HX711 off; **touch Tare or Timer** to wake
+- Battery / **USB** indicator; calibration in NVS
+- BLE: Decent Scale API (FFF4 notify, 36F5 write, 10 Hz weight, heartbeat) + Flowlog `0xF0–F2`
+- **Wi‑Fi** setup AP + status page + **OTA**
 
 ## Hardware
 
@@ -46,9 +56,17 @@ ESP32-S3 Super Mini: hold **BOOT** if upload fails, then reset after flash. USB 
 
 After the first USB flash, the scale can join your LAN and accept updates without a cable.
 
-### First-time Wi‑Fi setup
+### When it joins Wi‑Fi
 
-If no credentials are stored (or join fails), the scale starts a setup access point:
+On a normal boot the scale scans briefly for the saved SSID.
+
+- **Home network in range:** it joins and serves **http://half-decent.local/** (or its DHCP IP).
+- **Not in range, or no credentials saved:** Wi‑Fi stays **off**. Bluetooth keeps working. It does not start a hotspot and it does not keep reconnecting.
+- **You walk out of range while it is on:** after about 12 seconds it turns Wi‑Fi off until the next boot.
+
+### Opening the setup hotspot
+
+The hotspot does not come on by itself.
 
 | | |
 |--|--|
@@ -56,17 +74,20 @@ If no credentials are stored (or join fails), the scale starts a setup access po
 | Password | `scale1234` |
 | Portal | http://192.168.4.1/ (or `/wifi`) |
 
-1. Join `HalfDecent-Setup` from your phone/laptop.
-2. Open the portal and enter your home Wi‑Fi SSID + password.
-3. The scale reboots, joins STA, and serves **http://half-decent.local/** (or its DHCP IP).
+1. Power on (not a deep-sleep wake) and **hold Timer** until the splash goes away. The splash says `hold Timer = WiFi`.
+2. Join `HalfDecent-Setup` from your phone or laptop.
+3. Open the portal and enter the home Wi‑Fi SSID + password.
+4. The scale reboots and joins that network if it is in range.
+
+Waking from sleep with Timer does **not** open the hotspot. The pad is still touched from the wake.
 
 **Serial alternative** (USB monitor):
 
 ```text
 wifi set MySSID MyPassword
 wifi              # status / IP
-wifi clear        # wipe creds → setup AP on reboot
 wifi ap           # force setup AP now
+wifi clear        # forget home Wi‑Fi (radio stays off after reboot)
 ```
 
 ### Status page
@@ -74,9 +95,27 @@ wifi ap           # force setup AP now
 On the LAN: **http://half-decent.local/** (or `http://<ip>/`)
 
 - Live weight snapshot  
-- Links to **Wi‑Fi setup** and **OTA update**  
+- **Last shot** link → `/shot.json` (Flowlog-compatible JSON)  
+- Links to **Wi‑Fi setup**, **Nextcloud** (optional auto-push), and **OTA update**  
 
 OLED shows a small `WiFi` or `AP` label when wireless is up.
+
+### Buttons
+
+| Button | Short press | Long press |
+|--------|-------------|------------|
+| **Tare** (O) | Zero scale (safe while weighing beans). Cancels brew prompt. | Deep sleep |
+| **Timer** (□) | Kitchen timer start/stop. During brew: stop & save. On prompt: confirm. | **Start brew?** prompt |
+
+### Phone-free brew
+
+1. No phone needed (or phone not using the scale).
+2. **Long-press Timer** → OLED shows weight + “Start brew? / Timer=OK Tare=cancel”.
+3. **Timer** again → tare cup, scan `PRS*`, start recording. **Tare** cancels (does not zero).
+4. **Timer** during brew → save `/last_shot.json`, optional Nextcloud PUT.
+5. Flowlog **History → Import from scale** (`http://half-decent.local/shot.json`).
+
+Serial: `brew start` / `brew stop` / `prs` / `shot` / `nc push`.
 
 ### OTA update (PlatformIO)
 

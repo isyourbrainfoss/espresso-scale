@@ -18,9 +18,26 @@ struct DecentCommand {
     TimerStop,
     TimerReset,
     Heartbeat,
+    // Flowlog extensions (type 0xF0+)
+    PhonePressure,   // phone → scale pressure mirror during app brew
+    PhoneBrewStart,
+    PhoneBrewEnd,
+    ScaleDisplayConfig,  // target/warn g + pressure bar window
+    ShotExport,          // request list / transfer / status over BLE
   };
   Type type = Type::None;
   bool heartbeat_aware = false;  // byte5 == 0x01 on tare/LED
+  // PhonePressure payload
+  int16_t pressure_mbar = 0;
+  // ScaleDisplayConfig payload (uint8 grams / bar)
+  uint8_t cfg_target_g = 36;
+  uint8_t cfg_warn_g = 34;
+  uint8_t cfg_p_min = 5;
+  uint8_t cfg_p_max = 10;
+  // ShotExport: opcode in d0, slot/age in d1
+  //   0 = list metadata, 1 = transfer shot by age, 2 = status (IP)
+  uint8_t shot_opcode = 0;
+  uint8_t shot_slot = 0;
 };
 
 class BleDecent {
@@ -56,7 +73,31 @@ class BleDecent {
   bool heartbeatRequired() const { return heartbeat_required_; }
   void noteHeartbeat();
 
+  // --- Shot export over FFF4 (type 0xF5 chunks / 0xF4 list / 0xF6 status) ---
+  // Payload format (variable length up to negotiated MTU):
+  //   list:   03 F4 count s0lo s0hi s1lo s1hi s2lo s2hi
+  //   chunk:  03 F5 slot flags seq_lo seq_hi total_lo total_hi data...
+  //           flags bit0 = last chunk
+  //   status: 03 F6 ...ascii IP...
+  bool notifyShotList(const uint16_t sizes[3], uint8_t count);
+  bool notifyShotStatus(const char* ip_or_status);
+  bool notifyShotChunk(uint8_t slot, uint16_t seq, uint16_t total_chunks,
+                       const uint8_t* data, size_t len, bool last);
+  bool isTransferBusy() const { return xfer_active_; }
+  // Feed transfer from main loop: call with full JSON once, then pump().
+  bool beginShotTransfer(uint8_t slot, const String& json);
+  void pumpShotTransfer();  // send next chunk(s); safe every loop
+  void cancelShotTransfer();
+
  private:
+  // Active BLE shot transfer (JSON streamed as 0xF5 notifies).
+  bool xfer_active_ = false;
+  uint8_t xfer_slot_ = 0;
+  String xfer_json_;
+  size_t xfer_offset_ = 0;
+  uint16_t xfer_seq_ = 0;
+  uint16_t xfer_total_ = 0;
+  uint32_t xfer_last_ms_ = 0;
   CommandHandler on_command_;
   bool connected_ = false;
   bool advertising_ = false;
@@ -65,6 +106,19 @@ class BleDecent {
   bool notify_enabled_ = false;
   bool heartbeat_required_ = false;
   uint32_t last_heartbeat_ms_ = 0;
+
+  // Commands parsed on the NimBLE host task, executed from loop() via update().
+  // Never run NVS / Serial / notify / prs.disconnect() inside onWrite.
+  static constexpr size_t kCmdQueue = 8;
+  DecentCommand cmd_queue_[kCmdQueue];
+  volatile uint8_t cmd_head_ = 0;
+  volatile uint8_t cmd_tail_ = 0;
+  volatile uint8_t cmd_count_ = 0;
+  portMUX_TYPE cmd_mux_ = portMUX_INITIALIZER_UNLOCKED;
+
+  void enqueueCommand(const DecentCommand& cmd);
+  void pumpCommands();
+  void disconnectPeer();
 
   friend class DecentServerCallbacks;
   friend class DecentCharCallbacks;

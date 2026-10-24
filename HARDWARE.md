@@ -44,3 +44,18 @@ If readings invert, swap A+/A− or negate the calibration factor in software.
 - Keep HX711 digital lines short; noise shows up as weight flicker.
 - Hot cups can thermally drift a 2 kg cell; a thin silicone pad helps.
 - TTP223 modules often need VCC=3.3V on ESP32 breadboards.
+
+## LEDs in “sleep” (battery + BMS)
+
+Deep sleep turns off the OLED, radios, and HX711. It does **not** control LEDs on
+an **external battery BMS** module:
+
+| Light | Typical source | Off in deep sleep? |
+|-------|----------------|--------------------|
+| **Red** on BMS (e.g. TP4056 style) | Charge / power path on the BMS | **No** — on whenever pack voltage is present |
+| **Blue** on BMS | Often “charged / standby” indicator | **No** — BMS hardware, not the ESP |
+| Super Mini **RGB** (GPIO 48) | MCU addressable LED | Firmware forces off before sleep |
+| Super Mini **red power** (if hardwired to 3.3 V) | Always-on when rail is up | **No** without desoldering |
+
+So **red + blue with only battery and no USB** is usually the **BMS**, not a failed sleep.
+Confirm sleep by: OLED blank, BLE gone from phone scan, wake only via Tare/Timer touch.

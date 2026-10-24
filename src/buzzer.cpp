@@ -106,6 +106,14 @@ void Buzzer::timerStopChime() {
   startCurrent();
 }
 
+void Buzzer::yieldWarnChime() {
+  // Soft two-note "wind back" — quieter/shorter than start/stop.
+  clearQueue();
+  enqueue(NOTE_A4, 70, 35);
+  enqueue(NOTE_E5, 110, 0);
+  startCurrent();
+}
+
 void Buzzer::timerResetChime() {
   clearQueue();
   enqueue(NOTE_G5, 40, 15);

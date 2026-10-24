@@ -24,6 +24,7 @@ class Buzzer {
   void errorChime();
   void sleepChime();    // enter standby
   void wakeChime();     // leave standby
+  void yieldWarnChime();  // soft "near target" while brewing
 
  private:
   static constexpr int kMaxNotes = 8;

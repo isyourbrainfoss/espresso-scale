@@ -2,6 +2,7 @@
 
 #include <ArduinoOTA.h>
 #include <ESPmDNS.h>
+#include <HTTPClient.h>
 #include <Preferences.h>
 #include <Update.h>
 #include <WebServer.h>
@@ -18,8 +19,19 @@ constexpr const char* kNvsNs = "wifi";
 constexpr const char* kNvsSsid = "ssid";
 constexpr const char* kNvsPass = "pass";
 
+constexpr const char* kNcNs = "nextcloud";
+constexpr const char* kNcUrl = "url";
+constexpr const char* kNcUser = "user";
+constexpr const char* kNcPass = "pass";
+constexpr const char* kNcPath = "path";
+constexpr const char* kNcDefaultPath = "Flowlog/scale-last-shot.json";
+
 WifiOta* g_wifi = nullptr;
 WifiOta::WeightFn g_weight;
+WifiOta::ShotJsonFn g_shot_json;
+WifiOta::HasShotFn g_has_shot;
+WifiOta::ShotsListFn g_shots_list;
+WifiOta::ShotAtFn g_shot_at;
 
 String htmlEscape(const String& s) {
   String o;
@@ -82,13 +94,120 @@ void handleRoot() {
   body += F("<br><b>Weight:</b> ");
   body += String(w, 1);
   body += F(" g</p>");
-  body += F("<p><a href=/wifi>Wi‑Fi setup</a> · <a href=/update>OTA update</a></p>");
+  const bool has_shot = g_has_shot ? g_has_shot() : false;
+  body += F("<p><b>Stored shots:</b> ");
+  body += has_shot ? F("yes (up to 3)") : F("none");
+  body += F(" · <a href=/shots.json>List</a>"
+            " · <a href=/shot.json>Newest shot.json</a>"
+            " · <a href=/shot/0.json>0</a>"
+            " · <a href=/shot/1.json>1</a>"
+            " · <a href=/shot/2.json>2</a></p>");
+  body += F("<p><a href=/wifi>Wi‑Fi setup</a> · <a href=/update>OTA update</a>"
+            " · <a href=/nextcloud>Nextcloud</a></p>");
   body += F("<p class=meta>PlatformIO wireless upload uses ArduinoOTA on this host "
             "(password in config). Example:<br>"
             "<code>pio run -t upload -e ota --upload-port ");
   body += ip;
   body += F("</code></p>");
+  body += F("<p class=meta><b>Import into Flowlog:</b> History → Import from scale. "
+            "Phones often cannot resolve <code>half-decent.local</code> — use this "
+            "IP: <code>");
+  body += ip;
+  body += F("</code><br>"
+            "Or import over Bluetooth when the scale is paired in Flowlog.</p>");
   server.send(200, "text/html", pageShell("Half Decent Scale", body));
+}
+
+void handleShotJson() {
+  if (!g_shot_json) {
+    server.send(503, "application/json", "{\"error\":\"no shot provider\"}");
+    return;
+  }
+  String json = g_shot_json();
+  if (json.isEmpty()) {
+    server.send(404, "application/json", "{\"error\":\"no shot recorded\"}");
+    return;
+  }
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", json);
+}
+
+void handleShotsList() {
+  if (!g_shots_list) {
+    server.send(503, "application/json", "{\"error\":\"no shot list\"}");
+    return;
+  }
+  String json = g_shots_list();
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", json);
+}
+
+void handleShotAt() {
+  // URI: /shot/0.json /shot/1.json /shot/2.json
+  String uri = server.uri();
+  int age = -1;
+  if (uri.startsWith("/shot/") && uri.endsWith(".json")) {
+    String mid = uri.substring(6, uri.length() - 5);
+    age = mid.toInt();
+  }
+  if (age < 0 || age > 2 || !g_shot_at) {
+    server.send(404, "application/json", "{\"error\":\"invalid shot index\"}");
+    return;
+  }
+  String json = g_shot_at(static_cast<size_t>(age));
+  if (json.isEmpty()) {
+    server.send(404, "application/json", "{\"error\":\"no shot at index\"}");
+    return;
+  }
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", json);
+}
+
+void handleNextcloudGet() {
+  String body = F("<h1>Nextcloud (optional)</h1>"
+                  "<p class=meta>After a phone-free brew the scale can PUT "
+                  "<code>last_shot.json</code> to your Nextcloud via WebDAV. "
+                  "Leave blank to disable. Prefer app import when possible.</p>"
+                  "<form method=POST action=/nextcloud>"
+                  "<label>Server base URL"
+                  "<input name=url placeholder=\"https://cloud.example.com\" "
+                  "autocomplete=url></label>"
+                  "<label>Username<input name=user autocomplete=username></label>"
+                  "<label>App password<input name=pass type=password "
+                  "autocomplete=current-password></label>"
+                  "<label>Remote path"
+                  "<input name=path value=\"Flowlog/scale-last-shot.json\"></label>"
+                  "<button type=submit>Save</button></form>"
+                  "<form method=POST action=/nextcloud-clear style=\"margin-top:1rem\">"
+                  "<button type=submit>Clear credentials</button></form>"
+                  "<p><a href=/>Back</a></p>");
+  server.send(200, "text/html", pageShell("Nextcloud", body));
+}
+
+void handleNextcloudPost() {
+  String url = server.hasArg("url") ? server.arg("url") : "";
+  String user = server.hasArg("user") ? server.arg("user") : "";
+  String pass = server.hasArg("pass") ? server.arg("pass") : "";
+  String path = server.hasArg("path") ? server.arg("path") : kNcDefaultPath;
+  url.trim();
+  user.trim();
+  path.trim();
+  if (url.isEmpty() || user.isEmpty()) {
+    server.send(400, "text/plain", "url and user required");
+    return;
+  }
+  if (g_wifi) g_wifi->saveNextcloud(url, user, pass, path);
+  server.send(200, "text/html",
+              pageShell("Nextcloud",
+                        F("<h1>Saved</h1><p>Nextcloud credentials stored.</p>"
+                          "<p><a href=/>Back</a></p>")));
+}
+
+void handleNextcloudClear() {
+  if (g_wifi) g_wifi->clearNextcloud();
+  server.send(200, "text/html",
+              pageShell("Nextcloud",
+                        F("<h1>Cleared</h1><p><a href=/>Back</a></p>")));
 }
 
 void handleWifiGet() {
@@ -172,6 +291,14 @@ void setupRoutes() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/wifi", HTTP_GET, handleWifiGet);
   server.on("/wifi", HTTP_POST, handleWifiPost);
+  server.on("/shot.json", HTTP_GET, handleShotJson);
+  server.on("/shots.json", HTTP_GET, handleShotsList);
+  server.on("/shot/0.json", HTTP_GET, handleShotAt);
+  server.on("/shot/1.json", HTTP_GET, handleShotAt);
+  server.on("/shot/2.json", HTTP_GET, handleShotAt);
+  server.on("/nextcloud", HTTP_GET, handleNextcloudGet);
+  server.on("/nextcloud", HTTP_POST, handleNextcloudPost);
+  server.on("/nextcloud-clear", HTTP_POST, handleNextcloudClear);
   server.on(
       "/update", HTTP_POST,
       handleUpdatePostDone,
@@ -216,6 +343,44 @@ void WifiOta::clearCredentials() {
   }
   ssid_ = "";
   Serial.println("[wifi] credentials cleared");
+}
+
+void WifiOta::radioOff() {
+  stopServices();
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  mode_ = WifiMode::Off;
+  sta_lost_since_ms_ = 0;
+  Serial.println("[wifi] radio off — Bluetooth only");
+}
+
+bool WifiOta::savedSsidVisible(const String& ssid) {
+  // Directed scan, before BLE is up. If the home SSID is absent this returns
+  // in about a second instead of a 25s join that then starts the setup AP.
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false);
+  delay(40);
+  const int n = WiFi.scanNetworks(
+      /*async=*/false, /*show_hidden=*/true, /*passive=*/false,
+      kWifiScanMsPerChan, /*channel=*/0, ssid.c_str());
+  bool found = false;
+  if (n > 0) {
+    for (int i = 0; i < n; ++i) {
+      if (ssid == WiFi.SSID(i)) {
+        found = true;
+        Serial.printf("[wifi] saw \"%s\" ch=%d RSSI=%d\n",
+                      WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i));
+        break;
+      }
+    }
+  }
+  WiFi.scanDelete();
+  if (!found) {
+    Serial.printf("[wifi] saved \"%s\" not in range (scan=%d)\n", ssid.c_str(),
+                  n);
+  }
+  return found;
 }
 
 bool WifiOta::connectSta(const String& ssid, const String& pass) {
@@ -284,14 +449,15 @@ bool WifiOta::tryConnectSaved() {
   String ssid, pass;
   if (!loadCredentials(ssid, pass)) {
     Serial.println("[wifi] no saved credentials");
+    radioOff();
     return false;
   }
   stopServices();
-  if (connectSta(ssid, pass)) {
+  if (savedSsidVisible(ssid) && connectSta(ssid, pass)) {
     startServices();
     return true;
   }
-  startApPortal();
+  radioOff();
   return false;
 }
 
@@ -329,7 +495,9 @@ void WifiOta::startServices() {
 
   setupRoutes();
   server.begin();
-  Serial.println("[wifi] HTTP :80  (/  /wifi  /update)");
+  Serial.println(
+      "[wifi] HTTP :80  (/  /wifi  /shot.json  /shots.json  /shot/N.json  "
+      "/nextcloud  /update)");
 
   ArduinoOTA.setHostname(kHostname);
   if (kOtaPassword && kOtaPassword[0] != '\0') {
@@ -371,22 +539,42 @@ void WifiOta::end() {
   Serial.println("[wifi] off");
 }
 
-bool WifiOta::begin(WeightFn weight_fn) {
+bool WifiOta::begin(WeightFn weight_fn, ShotJsonFn shot_json_fn,
+                    HasShotFn has_shot_fn, ShotsListFn shots_list_fn,
+                    ShotAtFn shot_at_fn, bool force_setup_ap) {
   weight_fn_ = std::move(weight_fn);
+  shot_json_fn_ = std::move(shot_json_fn);
+  has_shot_fn_ = std::move(has_shot_fn);
+  shots_list_fn_ = std::move(shots_list_fn);
+  shot_at_fn_ = std::move(shot_at_fn);
   g_wifi = this;
   g_weight = weight_fn_;
+  g_shot_json = shot_json_fn_;
+  g_has_shot = has_shot_fn_;
+  g_shots_list = shots_list_fn_;
+  g_shot_at = shot_at_fn_;
   WiFi.persistent(false);
 
-  String ssid, pass;
-  if (loadCredentials(ssid, pass)) {
-    if (connectSta(ssid, pass)) {
-      startServices();
-      return true;
-    }
-  } else {
-    Serial.println("[wifi] no saved credentials");
+  if (force_setup_ap) {
+    Serial.println("[wifi] setup hotspot requested");
+    startApPortal();
+    return true;
   }
-  startApPortal();
+
+  String ssid, pass;
+  if (!loadCredentials(ssid, pass)) {
+    Serial.println("[wifi] no saved credentials — radio off");
+    radioOff();
+    return true;
+  }
+  if (savedSsidVisible(ssid) && connectSta(ssid, pass)) {
+    startServices();
+    return true;
+  }
+  // Home network missing or join failed. Do not start the setup AP and do
+  // not keep scanning — that combination with BLE is what rebooted the scale
+  // away from home.
+  radioOff();
   return true;
 }
 
@@ -398,11 +586,16 @@ bool WifiOta::startSetupAp() {
 void WifiOta::update() {
   if (mode_ == WifiMode::Station && WiFi.status() != WL_CONNECTED) {
     const uint32_t now = millis();
-    if (now - last_reconnect_ms_ > 10000) {
-      last_reconnect_ms_ = now;
-      Serial.println("[wifi] STA lost — reconnecting");
-      WiFi.reconnect();
+    if (sta_lost_since_ms_ == 0) {
+      sta_lost_since_ms_ = now;
+      Serial.println("[wifi] STA lost — radio off if it stays down");
+    } else if (now - sta_lost_since_ms_ >= kWifiStaGiveUpMs) {
+      Serial.println("[wifi] STA still down — radio off until next boot");
+      radioOff();
+      return;
     }
+  } else if (mode_ == WifiMode::Station) {
+    sta_lost_since_ms_ = 0;
   }
   if (services_started_) {
     ArduinoOTA.handle();
@@ -438,9 +631,78 @@ void WifiOta::printStatus() const {
                 ssid_.c_str(), ipString().c_str());
   if (mode_ == WifiMode::Station) {
     Serial.printf("[wifi] RSSI=%d hostname=%s.local\n", WiFi.RSSI(), kHostname);
+    Serial.printf("[wifi] shot export: http://%s/shot.json\n",
+                  ipString().c_str());
   }
   if (mode_ == WifiMode::AccessPoint) {
     Serial.printf("[wifi] join AP \"%s\" / \"%s\" → http://%s/\n", kApSsid,
                   kApPassword, WiFi.softAPIP().toString().c_str());
   }
+  Serial.printf("[wifi] nextcloud=%s\n", hasNextcloud() ? "configured" : "off");
+}
+
+bool WifiOta::saveNextcloud(const String& base_url, const String& user,
+                            const String& pass, const String& remote_path) {
+  if (!wifi_prefs.begin(kNcNs, false)) return false;
+  wifi_prefs.putString(kNcUrl, base_url);
+  wifi_prefs.putString(kNcUser, user);
+  wifi_prefs.putString(kNcPass, pass);
+  wifi_prefs.putString(kNcPath, remote_path.length() ? remote_path
+                                                     : kNcDefaultPath);
+  wifi_prefs.end();
+  Serial.printf("[nc] saved url=%s user=%s path=%s\n", base_url.c_str(),
+                user.c_str(),
+                remote_path.length() ? remote_path.c_str() : kNcDefaultPath);
+  return true;
+}
+
+void WifiOta::clearNextcloud() {
+  if (wifi_prefs.begin(kNcNs, false)) {
+    wifi_prefs.clear();
+    wifi_prefs.end();
+  }
+  Serial.println("[nc] credentials cleared");
+}
+
+bool WifiOta::hasNextcloud() const {
+  if (!wifi_prefs.begin(kNcNs, true)) return false;
+  String url = wifi_prefs.getString(kNcUrl, "");
+  wifi_prefs.end();
+  return url.length() > 0;
+}
+
+bool WifiOta::pushShotToNextcloud(const String& json) {
+  if (json.isEmpty()) return false;
+  if (mode_ != WifiMode::Station || WiFi.status() != WL_CONNECTED) {
+    Serial.println("[nc] skip push — not on WiFi STA");
+    return false;
+  }
+  if (!wifi_prefs.begin(kNcNs, true)) return false;
+  String base = wifi_prefs.getString(kNcUrl, "");
+  String user = wifi_prefs.getString(kNcUser, "");
+  String pass = wifi_prefs.getString(kNcPass, "");
+  String path = wifi_prefs.getString(kNcPath, kNcDefaultPath);
+  wifi_prefs.end();
+  if (base.isEmpty() || user.isEmpty()) return false;
+
+  // Build WebDAV URL: {base}/remote.php/dav/files/{user}/{path}
+  while (base.endsWith("/")) base.remove(base.length() - 1);
+  if (path.startsWith("/")) path = path.substring(1);
+  String url = base + "/remote.php/dav/files/" + user + "/" + path;
+
+  HTTPClient http;
+  http.setTimeout(15000);
+  http.begin(url);
+  http.setAuthorization(user.c_str(), pass.c_str());
+  http.addHeader("Content-Type", "application/json");
+  Serial.printf("[nc] PUT %s (%u bytes)\n", url.c_str(),
+                static_cast<unsigned>(json.length()));
+  int code = http.PUT(json);
+  http.end();
+  if (code >= 200 && code < 300) {
+    Serial.printf("[nc] push OK (%d)\n", code);
+    return true;
+  }
+  Serial.printf("[nc] push failed HTTP %d\n", code);
+  return false;
 }

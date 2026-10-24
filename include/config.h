@@ -3,12 +3,28 @@
 #include <cstdint>
 
 // --- Product ---
-static constexpr const char* kProductName = "Half Decent Scale";
-static constexpr const char* kFirmwareVersion = "1.3.0";
+static constexpr const char* kProductName = "Flowlog Scale";
+static constexpr const char* kFirmwareVersion = "1.6.3";
 
-// BLE advertises as "Decent Scale" so Flowlog and other Decent-compatible
-// apps discover the device without changes.
+// BLE still advertises as "Decent Scale" so Flowlog's existing pairing
+// (Decent-compatible FFF0/FFF4/36F5) discovers the device without app changes.
 static constexpr const char* kBleDeviceName = "Decent Scale";
+
+// Standalone cup-target UI (mirrors Flowlog Live yield bar defaults).
+static constexpr float kDefaultTargetYieldG = 36.0f;
+// Soft buzzer when cup weight crosses this (wind-back cue on Coffeejack).
+static constexpr float kDefaultYieldWarnG = 34.0f;
+
+// OLED pressure bar window (bar). Fill is relative to this range; tick marks
+// every 1 bar between min and max.
+static constexpr float kPressureBarMinBar = 5.0f;
+static constexpr float kPressureBarMaxBar = 10.0f;
+
+// Phone-free brew: confirm prompt times out (no accidental start while
+// weighing beans). Pressure auto-start is disabled — brew is intentional.
+static constexpr uint32_t kBrewConfirmTimeoutMs = 10000;
+// Clear phone-forwarded pressure if no update within this window.
+static constexpr uint32_t kPhonePressureStaleMs = 2500;
 
 // WiFi / OTA
 static constexpr const char* kHostname = "half-decent";
@@ -16,13 +32,21 @@ static constexpr const char* kApSsid = "HalfDecent-Setup";
 static constexpr const char* kApPassword = "scale1234";  // min 8 chars
 // Optional password for ArduinoOTA / web OTA (empty = open on LAN)
 static constexpr const char* kOtaPassword = "scaleota";
-static constexpr uint32_t kWifiConnectTimeoutMs = 25000;
+// Join only after a short directed scan sees the saved SSID. No AP fallback.
+static constexpr uint32_t kWifiConnectTimeoutMs = 12000;
+static constexpr uint32_t kWifiScanMsPerChan = 80;
+// Cold boot: hold Timer through this splash window to open the setup hotspot.
+static constexpr uint32_t kWifiSetupHoldMs = 1200;
+// If STA drops (left the house), turn WiFi off instead of reconnecting forever.
+static constexpr uint32_t kWifiStaGiveUpMs = 12000;
 
 // --- Sampling / UI ---
 static constexpr uint32_t kWeightNotifyHz = 10;
 static constexpr uint32_t kWeightNotifyIntervalMs = 1000 / kWeightNotifyHz;
 static constexpr uint32_t kDisplayRefreshMs = 100;
 static constexpr uint32_t kButtonPollMs = 10;
+// Sample recorder interval (matches weight notify rate).
+static constexpr uint32_t kShotSampleIntervalMs = kWeightNotifyIntervalMs;
 
 // OLED weight smoothing (BLE stays closer to raw readings).
 static constexpr float kOledFilterAlpha = 0.35f;
@@ -30,8 +54,8 @@ static constexpr float kOledFilterAlpha = 0.35f;
 // Flow rate: simple window derivative over this many samples at notify rate.
 static constexpr int kFlowRateWindowSamples = 8;  // ~0.8 s at 10 Hz
 
-// Auto-start shot timer when weight rises after a stable near-zero period.
-static constexpr bool kAutoTimerEnabled = true;
+// Auto shot-timer on the scale is off — Flowlog owns brew timing.
+static constexpr bool kAutoTimerEnabled = false;
 static constexpr float kAutoTimerThresholdG = 0.5f;
 static constexpr float kAutoTimerNearZeroG = 0.3f;
 
@@ -45,8 +69,9 @@ static constexpr float kDefaultCalMassG = 100.0f;
 // Fallback factor if NVS empty (raw counts per gram). Tune after first cal.
 static constexpr float kDefaultCalFactor = 1000.0f;
 
-// Half Decent heartbeat: disconnect if opted-in client misses this window.
-static constexpr uint32_t kHeartbeatTimeoutMs = 5000;
+// Heartbeat: disconnect only if client opted in and goes silent.
+// 15 s gives Flowlog headroom (app sends every 2 s) and avoids mid-brew drops.
+static constexpr uint32_t kHeartbeatTimeoutMs = 15000;
 
 // Deep sleep (long-press Tare): ~µA–mA class draw; wake on Tare or Timer touch.
 // Soft OLED-only standby is no longer used.
