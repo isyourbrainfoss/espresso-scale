@@ -571,31 +571,36 @@ void handleUpdateGet() {
   server.send(200, "text/html", pageShell("OTA update", body));
 }
 
+// Upload gate: auth, Host, Origin and CSRF are decided once per upload.
+bool authorizeUpload() {
+  if (g_wifi) g_wifi->noteActivity();
+  if (!hostOk()) {
+    g_upload.reason = "bad host";
+    return false;
+  }
+  AuthResult r = checkDigest();
+  noteAuthResult(r);
+  g_upload.auth = static_cast<uint8_t>(r);
+  if (r != AuthResult::Ok) {
+    g_upload.auth_failed = true;
+    g_upload.reason = "auth";
+    return false;
+  }
+  if (!sameOrigin() || !csrfOk()) {
+    g_upload.reason = "csrf/origin";
+    return false;
+  }
+  return true;
+}
+
 // Upload callback: runs before handleUpdatePostDone. Authorisation is decided
 // once at UPLOAD_FILE_START; rejected uploads are drained without touching
 // flash.
-void handleUpdatePost() {
-  HTTPUpload& upload = server.upload();
+void handleUpdatePost(HTTPUpload& upload) {
   if (upload.status == UPLOAD_FILE_START) {
     g_upload = UploadState{};
     g_upload.seen = true;
-    if (g_wifi) g_wifi->noteActivity();
-    if (!hostOk()) {
-      g_upload.reason = "bad host";
-      return;
-    }
-    AuthResult r = checkDigest();
-    noteAuthResult(r);
-    g_upload.auth = static_cast<uint8_t>(r);
-    if (r != AuthResult::Ok) {
-      g_upload.auth_failed = true;
-      g_upload.reason = "auth";
-      return;
-    }
-    if (!sameOrigin() || !csrfOk()) {
-      g_upload.reason = "csrf/origin";
-      return;
-    }
+    if (!authorizeUpload()) return;
     g_upload.accepted = true;
     Serial.printf("[ota] web start: %s\n", upload.filename.c_str());
     if (g_wifi) g_wifi->setOtaActive(true);
@@ -661,6 +666,30 @@ void handleUpdatePostDone() {
   }
 }
 
+// POST /update. Not registered with server.on(uri, method, fn, ufn): in
+// arduino-esp32 2.0.x such a handler also accepts *non-multipart* bodies via
+// RequestHandler::raw(), which calls the upload callback while
+// server.upload() is a null pointer -> LoadProhibited panic. curl --digest
+// sends exactly that (an empty probe POST before the multipart one), and any
+// unauthenticated client on the LAN could use it to reboot the scale.
+// This handler refuses the raw path, so plain POSTs reach
+// handleUpdatePostDone() and get a normal 401/400.
+class UpdatePostHandler : public RequestHandler {
+ public:
+  bool canHandle(HTTPMethod method, String uri) override {
+    return method == HTTP_POST && uri == "/update";
+  }
+  bool canUpload(String uri) override { return uri == "/update"; }
+  bool canRaw(String) override { return false; }
+  bool handle(WebServer&, HTTPMethod, String) override {
+    handleUpdatePostDone();
+    return true;
+  }
+  void upload(WebServer&, String, HTTPUpload& upload) override {
+    handleUpdatePost(upload);
+  }
+};
+
 void setupRoutes() {
   if (server_routes_ok) return;
   static const char* kHeaders[] = {"Origin", "Referer"};
@@ -677,10 +706,7 @@ void setupRoutes() {
   server.on("/nextcloud", HTTP_GET, handleNextcloudGet);
   server.on("/nextcloud", HTTP_POST, handleNextcloudPost);
   server.on("/nextcloud-clear", HTTP_POST, handleNextcloudClear);
-  server.on(
-      "/update", HTTP_POST,
-      handleUpdatePostDone,
-      handleUpdatePost);
+  server.addHandler(new UpdatePostHandler());
   server.on("/update", HTTP_GET, handleUpdateGet);
   server.onNotFound([]() {
     if (g_wifi) g_wifi->noteActivity();

@@ -197,11 +197,17 @@ Don't commit the password; `platformio.ini` reads it from the environment.
 ### OTA update (curl)
 
 ```bash
-P="$(cat ~/.config/espresso-scale/ota-password)"; IP=192.168.50.3
-TOKEN=$(curl -s --digest -u "admin:$P" "http://$IP/update" | grep -o 'csrf=[0-9a-f]*' | head -1 | cut -d= -f2)
-curl --digest -u "admin:$P" -H "Origin: http://$IP" \
+F=~/.config/espresso-scale/ota-password; IP=192.168.50.3
+cfg() { printf 'user = "admin:%s"\n' "$(cat "$F")"; }   # keeps the password off argv
+TOKEN=$(curl -s --digest -K <(cfg) "http://$IP/update" | grep -o 'csrf=[0-9a-f]*' | head -1 | cut -d= -f2)
+curl -s --digest -K <(cfg) -o /dev/null "http://$IP/update" \
+  --next --digest -K <(cfg) -H "Origin: http://$IP" -w 'HTTP %{http_code}\n' \
   -F "firmware=@.pio/build/esp32-s3-super-mini/firmware.bin" "http://$IP/update?csrf=$TOKEN"
 ```
+
+A 1.3 MB image takes about 2 minutes over the web upload; `HTTP 200` means it
+was accepted and the scale reboots. ArduinoOTA (`pio run -t upload -e ota`)
+is faster and uses the same password.
 
 ### Provisioning a known password without OLED / serial
 
