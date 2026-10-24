@@ -56,6 +56,42 @@ ESP32-S3 Super Mini: hold **BOOT** if upload fails, then reset after flash. USB 
 
 After the first USB flash, the scale can join your LAN and accept updates without a cable.
 
+### Device password (no shared default)
+
+There are **no compiled-in Wi‑Fi or OTA passwords**. On first boot each scale
+generates its own random password (12 symbols from the hardware RNG, e.g.
+`k7mq-29xh-tp4c`, ≈59 bits) and stores it in NVS. The same password is used for:
+
+| Where | Login |
+|--|--|
+| Setup access point `HalfDecent-XXXX` (WPA2) | the device password |
+| Web UI (`/`, `/wifi`, `/nextcloud`, `/update`) — HTTP Digest auth | user `admin` + device password |
+| ArduinoOTA / `pio run -e ota` | `HALF_DECENT_OTA_PASSWORD` = device password |
+
+The shot export endpoints (`/shot.json`, `/shots.json`, `/shot/N.json`) stay
+open and read-only so Flowlog's *Import from scale* keeps working without a login.
+
+`XXXX` is the last 4 hex digits of the board's MAC, so each scale has its own SSID.
+
+**How to see the password**
+
+- **First boot** (or after `auth reset`): it is shown on the OLED for 60 s and
+  printed **once** to the USB serial log in a `NEW DEVICE PASSWORD` banner.
+  This is the only time it ever goes to serial.
+- **Any time:** hold **Timer** for **5 s** (the timer resets at 1 s; keep holding).
+  The OLED shows the password (plus IP / setup-AP SSID) for 60 s.
+- **USB serial:** `auth show` puts it on the OLED (it is not echoed to serial).
+
+**How to reset it**
+
+- USB serial: `auth reset` → erases the stored password and reboots; a new
+  one is generated and displayed as on first boot.
+- Full wipe (password, Wi‑Fi, calibration): `pio run -t erase` then re-flash.
+
+> Upgrading from v1.3 or earlier: the old shared `scaleota` / `scale1234`
+> passwords stop working. After the update the scale boots with a fresh
+> device password on the OLED — note it for your next OTA upload.
+
 ### When it joins Wi‑Fi
 
 On a normal boot the scale scans briefly for the saved SSID.
@@ -66,18 +102,21 @@ On a normal boot the scale scans briefly for the saved SSID.
 
 ### Opening the setup hotspot
 
-The hotspot does not come on by itself.
+The hotspot does not come on by itself. It opens only when:
 
-| | |
-|--|--|
-| SSID | `HalfDecent-Setup` |
-| Password | `scale1234` |
-| Portal | http://192.168.4.1/ (or `/wifi`) |
+- you **hold Timer through the splash** on a cold power-on (not a deep-sleep wake), or
+- you **hold Timer 5 s** at runtime while the scale is not on a LAN (if it *is* on a
+  LAN, the first 5 s hold just shows the password; hold 5 s again while it is shown to
+  force the setup AP), or
+- you type `wifi ap` on USB serial.
 
-1. Power on (not a deep-sleep wake) and **hold Timer** until the splash goes away. The splash says `hold Timer = WiFi`.
-2. Join `HalfDecent-Setup` from your phone or laptop.
-3. Open the portal and enter the home Wi‑Fi SSID + password.
-4. The scale reboots and joins that network if it is in range.
+It closes itself after **10 minutes** with no phone joined and no web request.
+
+1. Open the hotspot (above). The OLED shows `SSID HalfDecent-XXXX`, the device password and `http://192.168.4.1`.
+2. Join that network from your phone/laptop with the device password.
+3. Open http://192.168.4.1/ — log in as `admin` with the same password.
+4. **Wi‑Fi setup** → enter SSID (≤32 bytes) and password (8–63 chars, or empty for an open network).
+5. The scale reboots and joins that network if it is in range.
 
 Waking from sleep with Timer does **not** open the hotspot. The pad is still touched from the wake.
 
@@ -85,14 +124,18 @@ Waking from sleep with Timer does **not** open the hotspot. The pad is still tou
 
 ```text
 wifi set MySSID MyPassword
+wifi set "SSID with spaces" MyPassword
 wifi              # status / IP
 wifi ap           # force setup AP now
 wifi clear        # forget home Wi‑Fi (radio stays off after reboot)
+wifi connect      # retry saved network now
+auth show         # device password on the OLED
+auth reset        # new device password (reboots)
 ```
 
 ### Status page
 
-On the LAN: **http://half-decent.local/** (or `http://<ip>/`)
+On the LAN: **http://half-decent.local/** (or `http://<ip>/`), user `admin` + device password.
 
 - Live weight snapshot  
 - **Last shot** link → `/shot.json` (Flowlog-compatible JSON)  
@@ -119,24 +162,54 @@ Serial: `brew start` / `brew stop` / `prs` / `shot` / `nc push`.
 
 ### OTA update (PlatformIO)
 
-Password is `scaleota` (change in `include/config.h` → `kOtaPassword`).
-
 ```bash
-# Discover IP from serial ("wifi") or the status page, then:
+export HALF_DECENT_OTA_PASSWORD='xxxx-xxxx-xxxx'   # from the OLED
 pio run -t upload -e ota --upload-port 192.168.1.50
-
 # If mDNS works on your OS:
 pio run -t upload -e ota --upload-port half-decent.local
 ```
 
+Don't commit the password; `platformio.ini` reads it from the environment.
+
 ### OTA update (browser)
 
 1. Build: `pio run`
-2. Open **http://half-decent.local/update**
+2. Open **http://half-decent.local/update** (log in as `admin`)
 3. Upload `.pio/build/esp32-s3-super-mini/firmware.bin`
 4. Wait for reboot
 
-During OTA the OLED shows `OTA...`. Prefer not to pour a shot mid-update.
+During OTA the OLED shows `OTA`. Prefer not to pour a shot mid-update.
+
+### Wi‑Fi security notes
+
+- Web UI: HTTP **Digest** auth (Basic is refused). The digest `uri` must match
+  the requested path. 5 bad logins → 60 s lockout (HTTP 429).
+- Every POST (`/wifi`, `/update`) needs a per-session random **CSRF token**
+  (embedded in the form; regenerated each time the web server starts) **and**
+  an `Origin` / `Referer` matching the device; the `Host` header must be the
+  device IP or `half-decent.local` (blocks DNS rebinding). Rejected uploads
+  never touch flash.
+- Responses send `Cache-Control: no-store`, `X-Frame-Options: DENY` and a strict CSP.
+- Limits: it's still plain HTTP. On your home LAN someone who can sniff traffic
+  could see a CSRF token and replay a digest response while the nonce is valid
+  (≤30 min). The setup AP is WPA2-protected with the device password.
+
+### Signed OTA images (not implemented yet — follow-up)
+
+Firmware images are checked only for the ESP image header and the esptool
+SHA-256 digest (integrity, not authenticity). Anyone who knows the device
+password can flash any image. Planned follow-up:
+
+- Sign `firmware.bin` in a PlatformIO post-build script (ECDSA P-256 over the
+  image SHA-256, signature appended), verify with mbedTLS in the web `/update`
+  handler before `Update.end()`, and route ArduinoOTA through the same check
+  (ArduinoOTA in Arduino-ESP32 2.x calls `Update` directly, so it needs its
+  own verifying receiver or must be disabled), **or**
+- Move to ESP-IDF Secure Boot v2 + signed app images (needs a custom
+  bootloader and eFuse burning — irreversible, so not done blindly).
+
+It was left out because it can't be tested without hardware and a mistake
+breaks the only wireless recovery path.
 
 ## Buttons
 
@@ -147,6 +220,7 @@ During OTA the OLED shows `OTA...`. Prefer not to pour a shot mid-update.
 | **Wake** | Touch **Tare** or **Timer** (full cold start + auto-tare + Wi‑Fi) |
 | Start/stop timer | Timer short press |
 | Reset timer | Timer long press (~1 s) |
+| **Show device password / open setup AP** | Keep holding **Timer** to ~5 s (see Wi‑Fi section) |
 | Calibration mode | Hold **both** ~3 s |
 
 Optional auto-start: timer starts when weight rises past 0.5 g after a tare (see `include/config.h`).
@@ -191,7 +265,7 @@ Weight is a 10-byte v1.2 packet; grams = signed big-endian int16 at bytes 2–3,
 
 ```
 include/pins.h config.h
-src/main.cpp scale.* display.* buttons.* buzzer.* shot_timer.* ble_decent.* wifi_ota.*
+src/main.cpp scale.* display.* buttons.* buzzer.* shot_timer.* ble_decent.* wifi_ota.* device_auth.*
 platformio.ini   # envs: esp32-s3-super-mini (USB), ota (espota)
 ```
 

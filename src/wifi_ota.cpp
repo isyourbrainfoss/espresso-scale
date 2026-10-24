@@ -3,12 +3,14 @@
 #include <ArduinoOTA.h>
 #include <ESPmDNS.h>
 #include <HTTPClient.h>
+#include <MD5Builder.h>
 #include <Preferences.h>
 #include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
 
 #include "config.h"
+#include "device_auth.h"
 
 namespace {
 Preferences wifi_prefs;
@@ -33,7 +35,276 @@ WifiOta::HasShotFn g_has_shot;
 WifiOta::ShotsListFn g_shots_list;
 WifiOta::ShotAtFn g_shot_at;
 
+// ---------------------------------------------------------------------------
+// Session secrets (regenerated every time the web server starts)
+// ---------------------------------------------------------------------------
+String g_csrf;          // per-session CSRF token, required in every POST
+String g_nonce;         // HTTP Digest server nonce
+String g_opaque;        // HTTP Digest opaque
+uint32_t g_nonce_ms = 0;
+constexpr uint32_t kNonceLifetimeMs = 30UL * 60UL * 1000UL;
+
+uint8_t g_auth_failures = 0;
+uint32_t g_lockout_until_ms = 0;
+
+// Web OTA upload state for the current request
+struct UploadState {
+  bool seen = false;         // upload callback ran for this request
+  bool accepted = false;     // passed auth / CSRF / origin checks
+  bool auth_failed = false;  // send a Digest challenge instead of 403
+  bool begun = false;        // Update.begin() succeeded
+  bool ok = false;           // Update.end() succeeded
+  const char* reason = "";
+  uint8_t auth = 0;          // AuthResult of the upload request
+};
+UploadState g_upload;
+
+void rotateNonce() {
+  g_nonce = device_auth::randomHex(16);
+  g_opaque = device_auth::randomHex(16);
+  g_nonce_ms = millis();
+}
+
+void newSession() {
+  g_csrf = device_auth::randomHex(16);
+  rotateNonce();
+  g_auth_failures = 0;
+  g_lockout_until_ms = 0;
+}
+
+String realm() { return String(kProductName) + " " + device_auth::apSsid(); }
+
+String md5hex(const String& in) {
+  MD5Builder md5;
+  md5.begin();
+  md5.add(in);
+  md5.calculate();
+  return md5.toString();
+}
+
+// Minimal RFC 7616 / 2617 Authorization: Digest parameter parser.
+struct DigestParams {
+  String username, realm, nonce, uri, response, opaque, qop, nc, cnonce,
+      algorithm;
+};
+
+bool parseDigest(const String& header, DigestParams& p) {
+  if (!header.startsWith("Digest ")) return false;
+  const size_t n = header.length();
+  size_t i = 7;
+  while (i < n) {
+    while (i < n && (header[i] == ' ' || header[i] == ',')) ++i;
+    size_t eq = header.indexOf('=', i);
+    if (eq == static_cast<size_t>(-1) || eq <= i) break;
+    String key = header.substring(i, eq);
+    key.trim();
+    key.toLowerCase();
+    i = eq + 1;
+    String val;
+    if (i < n && header[i] == '"') {
+      size_t end = header.indexOf('"', i + 1);
+      if (end == static_cast<size_t>(-1)) return false;
+      val = header.substring(i + 1, end);
+      i = end + 1;
+    } else {
+      size_t end = header.indexOf(',', i);
+      if (end == static_cast<size_t>(-1)) end = n;
+      val = header.substring(i, end);
+      val.trim();
+      i = end;
+    }
+    if (key == "username") p.username = val;
+    else if (key == "realm") p.realm = val;
+    else if (key == "nonce") p.nonce = val;
+    else if (key == "uri") p.uri = val;
+    else if (key == "response") p.response = val;
+    else if (key == "opaque") p.opaque = val;
+    else if (key == "qop") p.qop = val;
+    else if (key == "nc") p.nc = val;
+    else if (key == "cnonce") p.cnonce = val;
+    else if (key == "algorithm") p.algorithm = val;
+  }
+  return p.username.length() && p.nonce.length() && p.uri.length() &&
+         p.response.length();
+}
+
+const char* methodName() {
+  switch (server.method()) {
+    case HTTP_GET:
+      return "GET";
+    case HTTP_POST:
+      return "POST";
+    default:
+      return "";
+  }
+}
+
+void sendChallenge(bool stale) {
+  if (stale || (millis() - g_nonce_ms) > kNonceLifetimeMs) rotateNonce();
+  String h = F("Digest realm=\"");
+  h += realm();
+  h += F("\", qop=\"auth\", algorithm=MD5, nonce=\"");
+  h += g_nonce;
+  h += F("\", opaque=\"");
+  h += g_opaque;
+  h += '"';
+  if (stale) h += F(", stale=true");
+  server.sendHeader("WWW-Authenticate", h);
+  server.send(401, "text/plain",
+              "Authentication required. User: admin, password: the device "
+              "password shown on the scale's OLED.");
+}
+
+bool lockedOut() {
+  return g_lockout_until_ms != 0 &&
+         static_cast<int32_t>(millis() - g_lockout_until_ms) < 0;
+}
+
+enum class AuthResult : uint8_t { Ok, Missing, Stale, Bad, Locked };
+
+// HTTP Digest (qop=auth, MD5) against the per-device password. Basic auth
+// is deliberately not accepted (it would send the password in clear text).
+AuthResult checkDigest() {
+  if (lockedOut()) return AuthResult::Locked;
+  if (!server.hasHeader("Authorization")) return AuthResult::Missing;
+  DigestParams p;
+  if (!parseDigest(server.header("Authorization"), p)) return AuthResult::Bad;
+
+  // The digest must be for *this* request path (the stock WebServer does
+  // not check this, which lets a sniffed response be replayed elsewhere).
+  String uri_path = p.uri;
+  int q = uri_path.indexOf('?');
+  if (q >= 0) uri_path = uri_path.substring(0, q);
+  if (uri_path != server.uri()) return AuthResult::Bad;
+  if (p.qop != "auth" || !p.nc.length() || !p.cnonce.length())
+    return AuthResult::Bad;
+  if (p.algorithm.length() && !p.algorithm.equalsIgnoreCase("MD5"))
+    return AuthResult::Bad;
+  if (p.username != device_auth::kWebUser) return AuthResult::Bad;
+
+  const String& pw = device_auth::password();
+  const String ha1 = md5hex(String(device_auth::kWebUser) + ':' + realm() +
+                            ':' + pw);
+  const String ha2 = md5hex(String(methodName()) + ':' + p.uri);
+  const String expect = md5hex(ha1 + ':' + p.nonce + ':' + p.nc + ':' +
+                               p.cnonce + ":auth:" + ha2);
+  const bool hash_ok = device_auth::equalsConstantTime(expect, p.response);
+
+  if (p.nonce != g_nonce || p.opaque != g_opaque ||
+      (millis() - g_nonce_ms) > kNonceLifetimeMs) {
+    // Old nonce: correct password → silent re-auth (stale=true);
+    // wrong password with an old nonce still counts as a failure.
+    return hash_ok ? AuthResult::Stale : AuthResult::Bad;
+  }
+  return hash_ok ? AuthResult::Ok : AuthResult::Bad;
+}
+
+void noteAuthResult(AuthResult r) {
+  if (r == AuthResult::Ok) {
+    g_auth_failures = 0;
+    return;
+  }
+  if (r != AuthResult::Bad) return;
+  if (++g_auth_failures >= kAuthMaxFailures) {
+    g_auth_failures = 0;
+    g_lockout_until_ms = millis() + kAuthLockoutMs;
+    if (g_lockout_until_ms == 0) g_lockout_until_ms = 1;
+    rotateNonce();
+    Serial.printf("[web] too many failed logins — locked for %lus\n",
+                  static_cast<unsigned long>(kAuthLockoutMs / 1000));
+  }
+}
+
+void sendAuthFailure(AuthResult r) {
+  if (r == AuthResult::Locked) {
+    server.sendHeader("Retry-After", String(kAuthLockoutMs / 1000));
+    server.send(429, "text/plain", "Too many failed logins. Try again later.");
+  } else {
+    sendChallenge(r == AuthResult::Stale);
+  }
+}
+
+// Host header must name this device (blocks DNS-rebinding attacks).
+bool hostOk() {
+  String host = server.hostHeader();
+  host.toLowerCase();
+  if (host.endsWith(":80")) host.remove(host.length() - 3);
+  if (!host.length()) return false;
+  const String mdns = String(kHostname) + ".local";
+  if (host == mdns || host == kHostname) return true;
+  if (WiFi.getMode() & WIFI_MODE_AP) {
+    if (host == WiFi.softAPIP().toString()) return true;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    if (host == WiFi.localIP().toString()) return true;
+  }
+  return false;
+}
+
+// Same-origin check for POSTs: Origin (preferred) or Referer must match the
+// Host we are being addressed as. Requests with neither are rejected.
+bool sameOrigin() {
+  const String expected = String("http://") + server.hostHeader();
+  if (server.hasHeader("Origin") && server.header("Origin").length()) {
+    return server.header("Origin").equalsIgnoreCase(expected);
+  }
+  if (server.hasHeader("Referer") && server.header("Referer").length()) {
+    const String ref = server.header("Referer");
+    return ref.equalsIgnoreCase(expected) ||
+           ref.substring(0, expected.length() + 1)
+               .equalsIgnoreCase(expected + "/");
+  }
+  return false;
+}
+
+bool csrfOk() {
+  if (!g_csrf.length() || !server.hasArg("csrf")) return false;
+  return device_auth::equalsConstantTime(server.arg("csrf"), g_csrf);
+}
+
+void redirectToDevice(const char* path) {
+  String ip = (WiFi.getMode() & WIFI_MODE_AP) && WiFi.status() != WL_CONNECTED
+                  ? WiFi.softAPIP().toString()
+                  : WiFi.localIP().toString();
+  server.sendHeader("Location", String("http://") + ip + path);
+  server.send(302, "text/plain", "");
+}
+
+void securityHeaders() {
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("X-Frame-Options", "DENY");
+  server.sendHeader("X-Content-Type-Options", "nosniff");
+  server.sendHeader("Referrer-Policy", "same-origin");
+  server.sendHeader("Content-Security-Policy",
+                    "default-src 'none'; style-src 'unsafe-inline'; "
+                    "form-action 'self'; frame-ancestors 'none'");
+}
+
+// Gate for every protected route. Returns true if the handler may proceed.
+bool guard(bool is_post) {
+  if (g_wifi) g_wifi->noteActivity();
+  if (!hostOk()) {
+    // Captive-portal probes etc. arrive with foreign Host headers.
+    redirectToDevice("/");
+    return false;
+  }
+  AuthResult r = checkDigest();
+  noteAuthResult(r);
+  if (r != AuthResult::Ok) {
+    sendAuthFailure(r);
+    return false;
+  }
+  if (is_post && (!sameOrigin() || !csrfOk())) {
+    Serial.println("[web] POST rejected (CSRF / origin check)");
+    server.send(403, "text/plain", "Forbidden (CSRF / origin check failed)");
+    return false;
+  }
+  securityHeaders();
+  return true;
+}
+
 String htmlEscape(const String& s) {
+
   String o;
   o.reserve(s.length() + 8);
   for (size_t i = 0; i < s.length(); ++i) {
@@ -46,6 +317,8 @@ String htmlEscape(const String& s) {
       o += F("&gt;");
     else if (c == '"')
       o += F("&quot;");
+    else if (c == '\'')
+      o += F("&#39;");
     else
       o += c;
   }
@@ -72,10 +345,11 @@ String pageShell(const String& title, const String& body) {
 }
 
 void handleRoot() {
-  String ip = WiFi.getMode() == WIFI_AP ? WiFi.softAPIP().toString()
-                                        : WiFi.localIP().toString();
-  String mode = (WiFi.getMode() == WIFI_AP) ? "Access Point (setup)"
-               : (WiFi.status() == WL_CONNECTED) ? "Station" : "—";
+  if (!guard(false)) return;
+  const bool ap = WiFi.getMode() & WIFI_MODE_AP;
+  String ip = ap ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  String mode = ap ? "Access Point (setup)"
+               : (WiFi.status() == WL_CONNECTED) ? "Station" : "-";
   float w = g_weight ? g_weight() : 0.f;
 
   String body;
@@ -90,7 +364,7 @@ void handleRoot() {
   body += F("<br><b>IP:</b> ");
   body += ip;
   body += F("<br><b>SSID:</b> ");
-  body += htmlEscape(WiFi.SSID().length() ? WiFi.SSID() : String(kApSsid));
+  body += htmlEscape(ap ? device_auth::apSsid() : WiFi.SSID());
   body += F("<br><b>Weight:</b> ");
   body += String(w, 1);
   body += F(" g</p>");
@@ -104,9 +378,10 @@ void handleRoot() {
             " · <a href=/shot/2.json>2</a></p>");
   body += F("<p><a href=/wifi>Wi‑Fi setup</a> · <a href=/update>OTA update</a>"
             " · <a href=/nextcloud>Nextcloud</a></p>");
-  body += F("<p class=meta>PlatformIO wireless upload uses ArduinoOTA on this host "
-            "(password in config). Example:<br>"
-            "<code>pio run -t upload -e ota --upload-port ");
+  body += F("<p class=meta>PlatformIO wireless upload (ArduinoOTA) uses the same "
+            "device password as this page. Example:<br>"
+            "<code>HALF_DECENT_OTA_PASSWORD=&lt;device password&gt; "
+            "pio run -t upload -e ota --upload-port ");
   body += ip;
   body += F("</code></p>");
   body += F("<p class=meta><b>Import into Flowlog:</b> History → Import from scale. "
@@ -164,12 +439,16 @@ void handleShotAt() {
 }
 
 void handleNextcloudGet() {
+  if (!guard(false)) return;
+  const String csrf_field =
+      String(F("<input type=hidden name=csrf value=\"")) + g_csrf + "\">";
   String body = F("<h1>Nextcloud (optional)</h1>"
                   "<p class=meta>After a phone-free brew the scale can PUT "
                   "<code>last_shot.json</code> to your Nextcloud via WebDAV. "
                   "Leave blank to disable. Prefer app import when possible.</p>"
-                  "<form method=POST action=/nextcloud>"
-                  "<label>Server base URL"
+                  "<form method=POST action=/nextcloud>");
+  body += csrf_field;
+  body += F("<label>Server base URL"
                   "<input name=url placeholder=\"https://cloud.example.com\" "
                   "autocomplete=url></label>"
                   "<label>Username<input name=user autocomplete=username></label>"
@@ -178,13 +457,15 @@ void handleNextcloudGet() {
                   "<label>Remote path"
                   "<input name=path value=\"Flowlog/scale-last-shot.json\"></label>"
                   "<button type=submit>Save</button></form>"
-                  "<form method=POST action=/nextcloud-clear style=\"margin-top:1rem\">"
-                  "<button type=submit>Clear credentials</button></form>"
-                  "<p><a href=/>Back</a></p>");
+                  "<form method=POST action=/nextcloud-clear style=\"margin-top:1rem\">");
+  body += csrf_field;
+  body += F("<button type=submit>Clear credentials</button></form>"
+            "<p><a href=/>Back</a></p>");
   server.send(200, "text/html", pageShell("Nextcloud", body));
 }
 
 void handleNextcloudPost() {
+  if (!guard(true)) return;
   String url = server.hasArg("url") ? server.arg("url") : "";
   String user = server.hasArg("user") ? server.arg("user") : "";
   String pass = server.hasArg("pass") ? server.arg("pass") : "";
@@ -204,6 +485,7 @@ void handleNextcloudPost() {
 }
 
 void handleNextcloudClear() {
+  if (!guard(true)) return;
   if (g_wifi) g_wifi->clearNextcloud();
   server.send(200, "text/html",
               pageShell("Nextcloud",
@@ -211,16 +493,24 @@ void handleNextcloudClear() {
 }
 
 void handleWifiGet() {
+  if (!guard(false)) return;
   String body = F("<h1>Wi‑Fi setup</h1>"
+                  "<p class=meta>2.4 GHz only. SSID up to 32 bytes; password "
+                  "8–63 characters (leave empty for an open network).</p>"
                   "<form method=POST action=/wifi>"
-                  "<label>SSID<input name=ssid required autocomplete=username></label>"
-                  "<label>Password<input name=pass type=password autocomplete=current-password></label>"
-                  "<button type=submit>Save &amp; connect</button></form>"
-                  "<p><a href=/>Back</a></p>");
+                  "<input type=hidden name=csrf value=\"");
+  body += g_csrf;
+  body += F("\"><label>SSID<input name=ssid required maxlength=32 "
+            "autocomplete=off></label>"
+            "<label>Password<input name=pass type=password maxlength=63 "
+            "autocomplete=new-password></label>"
+            "<button type=submit>Save &amp; connect</button></form>"
+            "<p><a href=/>Back</a></p>");
   server.send(200, "text/html", pageShell("Wi‑Fi setup", body));
 }
 
 void handleWifiPost() {
+  if (!guard(true)) return;
   if (!server.hasArg("ssid")) {
     server.send(400, "text/plain", "missing ssid");
     return;
@@ -228,11 +518,15 @@ void handleWifiPost() {
   String ssid = server.arg("ssid");
   String pass = server.hasArg("pass") ? server.arg("pass") : "";
   ssid.trim();
-  if (ssid.isEmpty()) {
-    server.send(400, "text/plain", "empty ssid");
+  String err;
+  if (!WifiOta::validateCredentials(ssid, pass, &err)) {
+    server.send(400, "text/plain", err);
     return;
   }
-  if (g_wifi) g_wifi->saveCredentials(ssid, pass);
+  if (!g_wifi || !g_wifi->saveCredentials(ssid, pass)) {
+    server.send(500, "text/plain", "could not save credentials");
+    return;
+  }
   String body = F("<h1>Saved</h1><p>Connecting to <b>");
   body += htmlEscape(ssid);
   body += F("</b>… Rebooting in 2s.</p>");
@@ -242,41 +536,102 @@ void handleWifiPost() {
 }
 
 void handleUpdateGet() {
+  if (!guard(false)) return;
   String body = F("<h1>Firmware OTA</h1>"
                   "<p class=meta>Upload a <code>firmware.bin</code> from "
                   "<code>.pio/build/.../firmware.bin</code></p>"
-                  "<form method=POST action=/update enctype=multipart/form-data>"
-                  "<label>File<input type=file name=firmware accept=.bin required></label>"
-                  "<button type=submit>Flash &amp; reboot</button></form>"
-                  "<p><a href=/>Back</a></p>");
+                  "<form method=POST enctype=multipart/form-data "
+                  "action=\"/update?csrf=");
+  // CSRF token rides in the query string: multipart text fields are not
+  // available yet when the file-upload callback starts.
+  body += g_csrf;
+  body += F("\"><label>File<input type=file name=firmware accept=.bin required>"
+            "</label><button type=submit>Flash &amp; reboot</button></form>"
+            "<p><a href=/>Back</a></p>");
   server.send(200, "text/html", pageShell("OTA update", body));
 }
 
+// Upload callback: runs before handleUpdatePostDone. Authorisation is decided
+// once at UPLOAD_FILE_START; rejected uploads are drained without touching
+// flash.
 void handleUpdatePost() {
   HTTPUpload& upload = server.upload();
   if (upload.status == UPLOAD_FILE_START) {
+    g_upload = UploadState{};
+    g_upload.seen = true;
+    if (g_wifi) g_wifi->noteActivity();
+    if (!hostOk()) {
+      g_upload.reason = "bad host";
+      return;
+    }
+    AuthResult r = checkDigest();
+    noteAuthResult(r);
+    g_upload.auth = static_cast<uint8_t>(r);
+    if (r != AuthResult::Ok) {
+      g_upload.auth_failed = true;
+      g_upload.reason = "auth";
+      return;
+    }
+    if (!sameOrigin() || !csrfOk()) {
+      g_upload.reason = "csrf/origin";
+      return;
+    }
+    g_upload.accepted = true;
     Serial.printf("[ota] web start: %s\n", upload.filename.c_str());
     if (g_wifi) g_wifi->setOtaActive(true);
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+    // NOTE: no signature verification yet — see README "Signed OTA images".
+    // Update itself checks the ESP image magic byte and, at end(), the
+    // image SHA-256 appended by esptool.
+    if (Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      g_upload.begun = true;
+    } else {
       Update.printError(Serial);
       if (g_wifi) g_wifi->setOtaActive(false);
     }
   } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (!g_upload.begun) return;
     if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
       Update.printError(Serial);
     }
   } else if (upload.status == UPLOAD_FILE_END) {
+    if (!g_upload.begun) return;
     if (Update.end(true)) {
+      g_upload.ok = true;
       Serial.printf("[ota] web success: %u bytes\n", upload.totalSize);
     } else {
       Update.printError(Serial);
       if (g_wifi) g_wifi->setOtaActive(false);
     }
+  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    if (g_upload.begun) Update.abort();
+    g_upload.begun = false;
+    if (g_wifi) g_wifi->setOtaActive(false);
+    Serial.println("[ota] web upload aborted");
   }
 }
 
 void handleUpdatePostDone() {
-  if (Update.hasError()) {
+  if (!g_upload.seen) {
+    // No file part at all: still run the normal gate first.
+    if (!guard(true)) return;
+    server.send(400, "text/plain", "no firmware file received");
+    return;
+  }
+  g_upload.seen = false;
+  if (!g_upload.accepted) {
+    Serial.printf("[ota] web upload rejected (%s)\n", g_upload.reason);
+    if (!hostOk()) {
+      redirectToDevice("/");
+    } else if (g_upload.auth_failed) {
+      sendAuthFailure(static_cast<AuthResult>(g_upload.auth));
+    } else {
+      server.send(403, "text/plain", "Forbidden (CSRF / origin check failed)");
+    }
+    return;
+  }
+  securityHeaders();
+  if (!g_upload.ok || Update.hasError()) {
+    if (g_wifi) g_wifi->setOtaActive(false);
     server.send(500, "text/plain", "Update failed — see serial log");
   } else {
     server.send(200, "text/html",
@@ -288,6 +643,8 @@ void handleUpdatePostDone() {
 
 void setupRoutes() {
   if (server_routes_ok) return;
+  static const char* kHeaders[] = {"Origin", "Referer"};
+  server.collectHeaders(kHeaders, 2);  // Authorization is always collected
   server.on("/", HTTP_GET, handleRoot);
   server.on("/wifi", HTTP_GET, handleWifiGet);
   server.on("/wifi", HTTP_POST, handleWifiPost);
@@ -305,11 +662,11 @@ void setupRoutes() {
       handleUpdatePost);
   server.on("/update", HTTP_GET, handleUpdateGet);
   server.onNotFound([]() {
-    // Captive portal: redirect unknown hosts to setup
-    if (WiFi.getMode() == WIFI_AP) {
-      server.sendHeader("Location", String("http://") + WiFi.softAPIP().toString() +
-                                        "/wifi");
-      server.send(302, "text/plain", "");
+    if (g_wifi) g_wifi->noteActivity();
+    // Captive portal: redirect unknown hosts/paths to the (auth-protected)
+    // status page.
+    if (WiFi.getMode() & WIFI_MODE_AP) {
+      redirectToDevice("/");
     } else {
       server.send(404, "text/plain", "not found");
     }
@@ -317,6 +674,45 @@ void setupRoutes() {
   server_routes_ok = true;
 }
 }  // namespace
+
+// Load (or on first use generate) the device password once the radio is on,
+// so esp_random() is RF-seeded. Announces a freshly generated password once.
+static void ensureDeviceAuth() {
+  static bool announced = false;
+  device_auth::begin();
+  if (device_auth::generatedThisBoot() && !announced) {
+    announced = true;
+    // Deliberate one-time display: the only time the password is written to
+    // the serial log. Afterwards it is only shown on the OLED.
+    Serial.println();
+    Serial.println("[auth] ===== NEW DEVICE PASSWORD (shown once) =====");
+    Serial.printf("[auth]   %s\n", device_auth::password().c_str());
+    Serial.printf("[auth]   setup AP \"%s\", web user \"%s\", ArduinoOTA\n",
+                  device_auth::apSsid().c_str(), device_auth::kWebUser);
+    Serial.println("[auth]   Later: hold Timer 5 s or type `auth show` to see "
+                   "it on the OLED.");
+    Serial.println("[auth] =============================================");
+    if (g_wifi) g_wifi->requestSetupScreen();
+  }
+}
+
+bool WifiOta::validateCredentials(const String& ssid, const String& pass,
+                                  String* err) {
+  auto fail = [err](const char* m) {
+    if (err) *err = m;
+    return false;
+  };
+  if (ssid.isEmpty()) return fail("SSID must not be empty");
+  if (ssid.length() > 32) return fail("SSID must be at most 32 bytes");
+  if (pass.length() == 0) return true;  // open network
+  if (pass.length() < 8 || pass.length() > 63)
+    return fail("password must be 8-63 characters (or empty for open network)");
+  for (size_t i = 0; i < pass.length(); ++i) {
+    if (pass[i] < 0x20 || pass[i] > 0x7e)
+      return fail("password must be printable ASCII");
+  }
+  return true;
+}
 
 bool WifiOta::loadCredentials(String& ssid, String& pass) {
   if (!wifi_prefs.begin(kNvsNs, true)) return false;
@@ -327,6 +723,11 @@ bool WifiOta::loadCredentials(String& ssid, String& pass) {
 }
 
 bool WifiOta::saveCredentials(const String& ssid, const String& pass) {
+  String err;
+  if (!validateCredentials(ssid, pass, &err)) {
+    Serial.printf("[wifi] not saved: %s\n", err.c_str());
+    return false;
+  }
   if (!wifi_prefs.begin(kNvsNs, false)) return false;
   wifi_prefs.putString(kNvsSsid, ssid);
   wifi_prefs.putString(kNvsPass, pass);
@@ -463,13 +864,42 @@ bool WifiOta::tryConnectSaved() {
 
 void WifiOta::startApPortal() {
   stopServices();
+  WiFi.disconnect(true, true);
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(kApSsid, kApPassword);
+  ensureDeviceAuth();
+  const String& ssid = device_auth::apSsid();
+  if (!WiFi.softAP(ssid.c_str(), device_auth::password().c_str())) {
+    Serial.println("[wifi] softAP start failed");
+  }
   mode_ = WifiMode::AccessPoint;
-  ssid_ = kApSsid;
-  Serial.printf("[wifi] AP \"%s\"  IP %s  pass \"%s\"\n", kApSsid,
-                WiFi.softAPIP().toString().c_str(), kApPassword);
+  ssid_ = ssid;
+  ap_last_activity_ms_ = millis();
+  requestSetupScreen();
+  Serial.printf("[wifi] setup AP \"%s\"  IP %s  (password on OLED; closes "
+                "after %lu min idle)\n",
+                ssid.c_str(), WiFi.softAPIP().toString().c_str(),
+                static_cast<unsigned long>(kSetupApIdleTimeoutMs / 60000));
   startServices();
+}
+
+void WifiOta::closeSetupAp() {
+  if (mode_ != WifiMode::AccessPoint) return;
+  stopServices();
+  WiFi.softAPdisconnect(true);
+  setup_screen_until_ms_ = 0;
+  WiFi.mode(WIFI_OFF);
+  mode_ = WifiMode::Off;
+  ssid_ = "";
+  String ssid, pass;
+  if (loadCredentials(ssid, pass)) {
+    // Same one-shot directed scan + join as serial `wifi connect`; radio
+    // goes off again if the saved network is not around (v1.6.3 policy).
+    Serial.println("[wifi] setup AP closed — trying saved network once");
+    tryConnectSaved();
+  } else {
+    Serial.println("[wifi] setup AP closed — Wi-Fi off (hold Timer 5 s to "
+                   "reopen)");
+  }
 }
 
 void WifiOta::stopServices() {
@@ -484,6 +914,8 @@ void WifiOta::startServices() {
   if (services_started_) return;
   g_wifi = this;
   g_weight = weight_fn_;
+  ensureDeviceAuth();
+  newSession();
 
   if (!MDNS.begin(kHostname)) {
     Serial.println("[wifi] mDNS failed");
@@ -496,13 +928,12 @@ void WifiOta::startServices() {
   setupRoutes();
   server.begin();
   Serial.println(
-      "[wifi] HTTP :80  (/  /wifi  /shot.json  /shots.json  /shot/N.json  "
-      "/nextcloud  /update)");
+      "[wifi] HTTP :80  (/  /wifi  /nextcloud  /update: digest auth, user "
+      "\"admin\"; /shot.json  /shots.json  /shot/N.json: open, read-only)");
 
   ArduinoOTA.setHostname(kHostname);
-  if (kOtaPassword && kOtaPassword[0] != '\0') {
-    ArduinoOTA.setPassword(kOtaPassword);
-  }
+  // Same per-device password as the web UI / setup AP. Never empty.
+  ArduinoOTA.setPassword(device_auth::password().c_str());
   ArduinoOTA.onStart([this]() {
     ota_active_ = true;
     Serial.println("[ota] ArduinoOTA start");
@@ -524,8 +955,7 @@ void WifiOta::startServices() {
     Serial.printf("[ota] error %u\n", (unsigned)err);
   });
   ArduinoOTA.begin();
-  Serial.printf("[ota] ArduinoOTA ready (pass \"%s\")\n",
-                (kOtaPassword && kOtaPassword[0]) ? kOtaPassword : "(none)");
+  Serial.println("[ota] ArduinoOTA ready (device password)");
 
   services_started_ = true;
 }
@@ -563,7 +993,8 @@ bool WifiOta::begin(WeightFn weight_fn, ShotJsonFn shot_json_fn,
 
   String ssid, pass;
   if (!loadCredentials(ssid, pass)) {
-    Serial.println("[wifi] no saved credentials — radio off");
+    Serial.println("[wifi] no saved credentials — radio off. Hold Timer 5 s "
+                   "(or serial `wifi ap`) to open the setup AP.");
     radioOff();
     return true;
   }
@@ -583,9 +1014,31 @@ bool WifiOta::startSetupAp() {
   return true;
 }
 
+void WifiOta::noteActivity() { ap_last_activity_ms_ = millis(); }
+
+void WifiOta::requestSetupScreen() {
+  setup_screen_until_ms_ = millis() + kSetupScreenMs;
+  if (setup_screen_until_ms_ == 0) setup_screen_until_ms_ = 1;
+}
+
+bool WifiOta::setupScreenActive() const {
+  if (setup_screen_until_ms_ != 0 &&
+      static_cast<int32_t>(millis() - setup_screen_until_ms_) < 0) {
+    return true;
+  }
+  return mode_ == WifiMode::AccessPoint && WiFi.softAPgetStationNum() > 0;
+}
+
+uint32_t WifiOta::apSecondsLeft() const {
+  if (mode_ != WifiMode::AccessPoint) return 0;
+  const uint32_t idle = millis() - ap_last_activity_ms_;
+  if (idle >= kSetupApIdleTimeoutMs) return 0;
+  return (kSetupApIdleTimeoutMs - idle) / 1000;
+}
+
 void WifiOta::update() {
+  const uint32_t now = millis();
   if (mode_ == WifiMode::Station && WiFi.status() != WL_CONNECTED) {
-    const uint32_t now = millis();
     if (sta_lost_since_ms_ == 0) {
       sta_lost_since_ms_ = now;
       Serial.println("[wifi] STA lost — radio off if it stays down");
@@ -596,6 +1049,12 @@ void WifiOta::update() {
     }
   } else if (mode_ == WifiMode::Station) {
     sta_lost_since_ms_ = 0;
+  } else if (mode_ == WifiMode::AccessPoint) {
+    if (WiFi.softAPgetStationNum() > 0) ap_last_activity_ms_ = now;
+    if (now - ap_last_activity_ms_ > kSetupApIdleTimeoutMs && !ota_active_) {
+      Serial.println("[wifi] setup AP idle timeout");
+      closeSetupAp();
+    }
   }
   if (services_started_) {
     ArduinoOTA.handle();
@@ -620,7 +1079,7 @@ const char* WifiOta::modeLabel() const {
     case WifiMode::AccessPoint:
       return "AP";
     case WifiMode::Connecting:
-      return "…";
+      return "...";
     default:
       return "";
   }
@@ -635,8 +1094,11 @@ void WifiOta::printStatus() const {
                   ipString().c_str());
   }
   if (mode_ == WifiMode::AccessPoint) {
-    Serial.printf("[wifi] join AP \"%s\" / \"%s\" → http://%s/\n", kApSsid,
-                  kApPassword, WiFi.softAPIP().toString().c_str());
+    Serial.printf("[wifi] join AP \"%s\" (password on OLED) → http://%s/  "
+                  "closes in %lus if idle\n",
+                  device_auth::apSsid().c_str(),
+                  WiFi.softAPIP().toString().c_str(),
+                  static_cast<unsigned long>(apSecondsLeft()));
   }
   Serial.printf("[wifi] nextcloud=%s\n", hasNextcloud() ? "configured" : "off");
 }

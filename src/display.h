@@ -29,6 +29,14 @@ struct DisplayState {
   bool prs_link = false;  // connected to Pressensor
   // Standalone brew confirm: long-press Timer → prompt, short Timer OK / Tare cancel.
   bool brew_confirm = false;
+
+  // Wi-Fi setup / device password screen (takes over the OLED when set).
+  bool setup_screen = false;
+  bool setup_ap = false;               // setup AP open (else STA info)
+  const char* setup_ssid = nullptr;    // AP SSID, or joined network
+  const char* setup_pass = nullptr;    // per-device password
+  const char* setup_ip = nullptr;
+  uint32_t setup_secs_left = 0;        // AP idle timeout countdown
 };
 
 class Display {
