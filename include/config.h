@@ -43,6 +43,8 @@ static constexpr uint32_t kAuthLockoutMs = 60000;
 // Join only after a short directed scan sees the saved SSID. No AP fallback.
 static constexpr uint32_t kWifiConnectTimeoutMs = 12000;
 static constexpr uint32_t kWifiScanMsPerChan = 80;
+// Background boot scan: give up (radio off) if no result by then.
+static constexpr uint32_t kWifiScanDeadlineMs = 6000;
 // Cold boot: hold Timer for this long after power-on to open the setup
 // hotspot. Sampled from loop() while the weight is already live.
 static constexpr uint32_t kWifiSetupHoldMs = 1200;

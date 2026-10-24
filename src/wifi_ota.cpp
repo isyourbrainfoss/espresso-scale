@@ -1041,6 +1041,7 @@ bool WifiOta::begin(WeightFn weight_fn, ShotJsonFn shot_json_fn,
   // absent it ends in about a second and the radio goes off — no join
   // attempt, no setup AP (that combination with BLE rebooted the scale away
   // from home).
+  WiFi.setHostname(kHostname);  // applied when the STA interface starts
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(false);
   const int16_t r = WiFi.scanNetworks(
@@ -1055,6 +1056,7 @@ bool WifiOta::begin(WeightFn weight_fn, ShotJsonFn shot_json_fn,
   boot_pass_ = pass;
   mode_ = WifiMode::Connecting;
   boot_ = BootStep::Scanning;
+  join_start_ms_ = millis();  // scan start until the join begins
   return true;
 }
 
@@ -1065,6 +1067,13 @@ void WifiOta::bootStep() {
   if (boot_ == BootStep::Scanning) {
     const int16_t n = WiFi.scanComplete();
     if (n == WIFI_SCAN_RUNNING) return;
+    // scanComplete() reports FAILED once max_ms_per_chan * 20 has passed,
+    // but the active scan dwells >= 100 ms per channel, so a 13-channel
+    // scan can outlast that. The real result still arrives (scanComplete()
+    // then returns the count); only give up after a hard deadline.
+    if (n == WIFI_SCAN_FAILED && millis() - join_start_ms_ < kWifiScanDeadlineMs) {
+      return;
+    }
     int32_t channel = 0;
     uint8_t bssid[6] = {};
     bool found = false;
