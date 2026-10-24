@@ -846,11 +846,15 @@ String bootInfoForHttp() {
   auto sec = [](uint32_t ms) { return String(ms / 1000.0f, 2) + " s"; };
   String s = F("Boot: live weight ");
   s += boot_t.first_live ? sec(boot_t.first_live) : String("-");
+  s += F(" (zero ");
+  s += scale.bootZeroDone() ? sec(scale.bootZeroMs()) : String("-");
+  s += F(") · radios start ");
+  s += boot_t.wifi_start ? sec(boot_t.wifi_start) : String("-");
   s += F(" · BLE ");
   s += boot_t.ble_start ? sec(boot_t.ble_start) : String("-");
   s += F(" · Wi-Fi ");
   s += boot_t.wifi_done ? sec(boot_t.wifi_done) : String("-");
-  s += F(" · zero ");
+  s += F(" · ");
   switch (scale.bootZero()) {
     case Scale::BootZero::First:
       s += F("tared (new empty ref)");
@@ -1055,5 +1059,6 @@ void loop() {
       }
     }
     display.render(st);
+    if (!boot_t.first_live && scale.bootZeroDone()) boot_t.first_live = millis();
   }
 }
