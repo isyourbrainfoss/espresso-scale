@@ -373,6 +373,8 @@ void handleBleCommand(const DecentCommand& cmd) {
       break;
     case DecentCommand::Type::PowerOff:
       ble.notifyLedAck(battery.decentBatteryByte());
+      // enterDeepSleep() -> ble.end() waits for the ack to be sent and
+      // disconnects the client cleanly before deinitialising NimBLE.
       enterDeepSleep();
       break;
     case DecentCommand::Type::TimerStart:
@@ -384,7 +386,7 @@ void handleBleCommand(const DecentCommand& cmd) {
     case DecentCommand::Type::TimerReset:
       doTimerReset();
       break;
-    case DecentCommand::Type::Heartbeat:
+    case DecentCommand::Type::Heartbeat:  // handled in BLE callback, not queued
       break;
     case DecentCommand::Type::PhonePressure:
       phone_pressure_bar = cmd.pressure_mbar / 1000.0f;

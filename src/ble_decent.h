@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <atomic>
 #include <functional>
 
 // Decent Scale BLE peripheral — Flowlog-compatible.
@@ -45,7 +46,9 @@ class BleDecent {
   using CommandHandler = std::function<void(const DecentCommand&)>;
 
   bool begin(CommandHandler on_command);
-  void end();  // stop BLE before deep sleep
+  // Stop BLE before deep sleep. Waits briefly so already-queued notifies
+  // (e.g. the PowerOff ack) reach the client before the stack is torn down.
+  void end();
   void update();
 
   bool isConnected() const { return connected_; }
@@ -99,13 +102,16 @@ class BleDecent {
   uint16_t xfer_total_ = 0;
   uint32_t xfer_last_ms_ = 0;
   CommandHandler on_command_;
-  bool connected_ = false;
-  bool advertising_ = false;
-  bool app_mode_ = false;
-  bool display_on_ = true;
-  bool notify_enabled_ = false;
-  bool heartbeat_required_ = false;
-  uint32_t last_heartbeat_ms_ = 0;
+  // Written from the NimBLE host task (callbacks) and read/written from the
+  // Arduino loop task, so they must be atomic.
+  std::atomic<bool> connected_{false};
+  std::atomic<bool> advertising_{false};
+  std::atomic<bool> app_mode_{false};
+  std::atomic<bool> display_on_{true};
+  std::atomic<bool> notify_enabled_{false};
+  std::atomic<bool> heartbeat_required_{false};
+  std::atomic<uint32_t> last_heartbeat_ms_{0};
+  std::atomic<bool> stopping_{false};  // end() in progress: don't re-advertise
 
   // Commands parsed on the NimBLE host task, executed from loop() via update().
   // Never run NVS / Serial / notify / prs.disconnect() inside onWrite.

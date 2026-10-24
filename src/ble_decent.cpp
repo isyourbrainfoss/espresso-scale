@@ -42,6 +42,7 @@ uint8_t BleDecent::xor6(const uint8_t* b) {
 bool BleDecent::begin(CommandHandler on_command) {
   on_command_ = std::move(on_command);
   g_ble = this;
+  stopping_ = false;
 
   NimBLEDevice::init(kBleDeviceName);
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
@@ -78,8 +79,17 @@ void BleDecent::startAdvertising() {
 }
 
 void BleDecent::end() {
+  stopping_ = true;
   if (server) {
     NimBLEDevice::getAdvertising()->stop();
+    if (connected_) {
+      // notify() only hands the packet to the NimBLE host; give it time to go
+      // out on the next connection event(s) before we disconnect/deinit.
+      delay(150);
+      disconnectPeer();
+      const uint32_t t0 = millis();
+      while (connected_ && millis() - t0 < 500) delay(10);
+    }
   }
   NimBLEDevice::deinit(true);
   connected_ = false;
@@ -108,6 +118,10 @@ void BleDecent::onDisconnect() {
   app_mode_ = false;
   notify_enabled_ = false;
   heartbeat_required_ = false;
+  if (stopping_) {
+    Serial.println("[ble] disconnected");
+    return;
+  }
   Serial.println("[ble] disconnected — re-advertising");
   startAdvertising();
 }
@@ -267,7 +281,10 @@ void BleDecent::noteHeartbeat() {
 void BleDecent::update() {
   pumpCommands();
   if (connected_ && heartbeat_required_) {
-    if (millis() - last_heartbeat_ms_ > kHeartbeatTimeoutMs) {
+    // Load the timestamp before millis(): the BLE task may refresh it at any
+    // time, and reading it after `now` could make (now - last) wrap around.
+    const uint32_t last = last_heartbeat_ms_.load();
+    if (millis() - last > kHeartbeatTimeoutMs) {
       Serial.println("[ble] heartbeat timeout — disconnect");
       disconnectPeer();
       heartbeat_required_ = false;
