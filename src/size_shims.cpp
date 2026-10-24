@@ -17,4 +17,18 @@ void __wrap_mbedtls_strerror(int ret, char* buf, size_t buflen) {
            static_cast<unsigned>(ret < 0 ? -ret : ret));
 }
 
+// The only live sscanf() caller is NimBLEAddress, parsing "%x:%x:..."
+// (every default-constructed NimBLEAddress goes through it). Route sscanf to
+// newlib's integer-only scanner, which tzset() links anyway, so the
+// floating-point scanner (~10 KB) is dropped. Float conversions (%f/%e/%g)
+// are NOT supported through sscanf in this firmware; use strtof() instead.
+int vsiscanf(const char* str, const char* fmt, va_list ap);
+int __wrap_sscanf(const char* str, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsiscanf(str, fmt, ap);
+  va_end(ap);
+  return n;
+}
+
 }  // extern "C"
