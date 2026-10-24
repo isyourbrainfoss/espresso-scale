@@ -7,15 +7,23 @@ Breadboard espresso scale firmware for **ESP32-S3 Super Mini** + HX711 + SSD1306
 
 Built as the **companion scale for [Flowlog](https://github.com/isyourbrainfoss/Flowlog)** using the public **Decent Scale BLE** protocol (device still advertises as `Decent Scale` so pairing stays unchanged).
 
-## Features (v1.6.3)
+## Features (v1.7.0)
+
+v1.7.0 shows live grams about a second after power-on or wake. The HX711
+zeroes in the background while the weight screen is already up; Wi‑Fi (one
+directed scan, then a direct join) and Bluetooth start afterwards without
+blocking the weighing loop (v1.6.3 needed ~12 s before the first weight). The
+boot tare now averages one fresh sample window (~0.6 s at 10 SPS instead of two
+back-to-back library tares), and a cup left on the platform through power-on
+is no longer zeroed away (see *Zero point* below). Web UI, setup AP and OTA are
+protected by a per-device password (digest auth + CSRF).
 
 v1.6.3 joins the saved home network only when that SSID is actually in range.
 Away from home the Wi‑Fi radio stays off (Bluetooth only) instead of hunting
-for 25 seconds and then starting the setup hotspot. Hold **Timer** through the
-splash on a cold boot to open the hotspot. v1.6.2 kept grams on the OLED during
-an app brew and moved BLE commands onto the Arduino loop.
+for 25 seconds and then starting the setup hotspot. v1.6.2 kept grams on the
+OLED during an app brew and moved BLE commands onto the Arduino loop.
 
-- Weight to 0.1 g (HX711 + 2 kg cell) with **auto-tare on boot**
+- Weight to 0.1 g (HX711 + 2 kg cell) with a fast **auto-tare on boot**
 - **OLED**: weight + **pressure (bar)**, cup fill bar (target 36 g / warn 32 g), pressure bar 0–12 bar
 - Flow rate (g/s)
 - **Phone-free brew**: **long-press Timer** → OLED “Start brew?” → **Timer** to confirm (tare + PRS + record) or **Tare** to cancel. Short Timer is kitchen timer only; Tare short always zeros for dosing beans
@@ -104,7 +112,7 @@ On a normal boot the scale scans briefly for the saved SSID.
 
 The hotspot does not come on by itself. It opens only when:
 
-- you **hold Timer through the splash** on a cold power-on (not a deep-sleep wake), or
+- you **hold Timer for the first ~1.2 s after a cold power-on** (not a deep-sleep wake), or
 - you **hold Timer 5 s** at runtime while the scale is not on a LAN (if it *is* on a
   LAN, the first 5 s hold just shows the password; hold 5 s again while it is shown to
   force the setup AP), or
@@ -133,11 +141,26 @@ auth show         # device password on the OLED
 auth reset        # new device password (reboots)
 ```
 
+### Zero point
+
+The boot tare compares the platform with the stored **empty zero** (raw
+reading of the empty platform, kept in NVS and refreshed by every boot or tare
+on a nearly empty platform, and by `cal empty`):
+
+- within +40 g of it (or lighter): normal boot tare — absorbs drift;
+- 40 g or more heavier (cup left on the scale): keeps the stored empty zero, so
+  the cup shows its weight and lifting it reads 0 g instead of −cup.
+
+A tare by button, app or web always zeroes whatever is on the platform —
+lifting a tared cup reads negative, as on any scale. `zero clear` (serial)
+forgets the reference. The status page shows the boot timing and the zero
+decision.
+
 ### Status page
 
 On the LAN: **http://half-decent.local/** (or `http://<ip>/`), user `admin` + device password.
 
-- Live weight snapshot  
+- Live weight snapshot + **Tare** button, boot timing / zero decision  
 - **Last shot** link → `/shot.json` (Flowlog-compatible JSON)  
 - Links to **Wi‑Fi setup**, **Nextcloud** (optional auto-push), and **OTA update**  
 
@@ -171,6 +194,30 @@ pio run -t upload -e ota --upload-port half-decent.local
 
 Don't commit the password; `platformio.ini` reads it from the environment.
 
+### OTA update (curl)
+
+```bash
+P="$(cat ~/.config/espresso-scale/ota-password)"; IP=192.168.50.3
+TOKEN=$(curl -s --digest -u "admin:$P" "http://$IP/update" | grep -o 'csrf=[0-9a-f]*' | head -1 | cut -d= -f2)
+curl --digest -u "admin:$P" -H "Origin: http://$IP" \
+  -F "firmware=@.pio/build/esp32-s3-super-mini/firmware.bin" "http://$IP/update?csrf=$TOKEN"
+```
+
+### Provisioning a known password without OLED / serial
+
+If you can't read the OLED or USB serial (e.g. first update to the
+authenticated firmware over the old open `/update`), create the untracked
+header `include/device_password_provision.h`:
+
+```c
+#pragma once
+static constexpr const char* kProvisionDevicePassword = "your-password-8-63-chars";
+```
+
+Build and flash once; on boot it overwrites the stored device password. Then
+delete the header, rebuild and OTA the normal image with that password — it
+keeps the stored password. The header is in `.gitignore`.
+
 ### OTA update (browser)
 
 1. Build: `pio run`
@@ -184,7 +231,7 @@ During OTA the OLED shows `OTA`. Prefer not to pour a shot mid-update.
 
 - Web UI: HTTP **Digest** auth (Basic is refused). The digest `uri` must match
   the requested path. 5 bad logins → 60 s lockout (HTTP 429).
-- Every POST (`/wifi`, `/update`) needs a per-session random **CSRF token**
+- Every POST (`/wifi`, `/nextcloud`, `/tare`, `/update`) needs a per-session random **CSRF token**
   (embedded in the form; regenerated each time the web server starts) **and**
   an `Origin` / `Referer` matching the device; the `Host` header must be the
   device IP or `half-decent.local` (blocks DNS rebinding). Rejected uploads
@@ -217,7 +264,7 @@ breaks the only wireless recovery path.
 |--------|---------|
 | Tare | Tare short press |
 | **Deep sleep** | **Tare long press** (~1 s) — OLED shows Sleep… then powers down |
-| **Wake** | Touch **Tare** or **Timer** (full cold start + auto-tare + Wi‑Fi) |
+| **Wake** | Touch **Tare** or **Timer** (full cold start + auto-tare + Wi‑Fi; the waking touch is ignored) |
 | Start/stop timer | Timer short press |
 | Reset timer | Timer long press (~1 s) |
 | **Show device password / open setup AP** | Keep holding **Timer** to ~5 s (see Wi‑Fi section) |
