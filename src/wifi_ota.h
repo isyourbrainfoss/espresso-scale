@@ -35,13 +35,26 @@ class WifiOta {
   // Optional: GET /shot/<age>.json — age 0 = newest.
   using ShotAtFn = std::function<String(size_t age)>;
 
-  // force_setup_ap opens HalfDecent-Setup and does not try the home SSID.
+  // Extra status-page line (boot timing / zero), and the web Tare action.
+  using BootInfoFn = std::function<String()>;
+  using TareFn = std::function<void()>;
+  void setBootInfo(BootInfoFn fn);
+  void setTareHandler(TareFn fn);
+
+  // Non-blocking: starts a directed scan for the saved SSID and returns.
+  // update() finishes the scan and the join in the background.
+  // force_setup_ap opens the setup AP and does not try the home SSID.
   bool begin(WeightFn weight_fn = nullptr, ShotJsonFn shot_json_fn = nullptr,
              HasShotFn has_shot_fn = nullptr,
              ShotsListFn shots_list_fn = nullptr,
              ShotAtFn shot_at_fn = nullptr, bool force_setup_ap = false);
   void end();  // WiFi off before deep sleep
   void update();
+
+  // Boot scan finished (joined, joining, AP, or radio off): safe for BLE.
+  bool bootScanDone() const { return boot_ != BootStep::Scanning; }
+  // Boot Wi-Fi decision complete (joined, gave up, AP, or off).
+  bool bootSettled() const { return boot_ == BootStep::Done; }
 
   WifiMode mode() const { return mode_; }
   bool isStation() const { return mode_ == WifiMode::Station; }
@@ -97,6 +110,14 @@ class WifiOta {
   uint32_t sta_lost_since_ms_ = 0;
   uint32_t ap_last_activity_ms_ = 0;
   uint32_t setup_screen_until_ms_ = 0;
+
+  enum class BootStep : uint8_t { Idle, Scanning, Joining, Done };
+  BootStep boot_ = BootStep::Idle;
+  String boot_pass_;
+  uint32_t join_start_ms_ = 0;
+  void bootStep();
+  void beginJoin(const String& ssid, const String& pass, int32_t channel,
+                 const uint8_t* bssid);
 
   bool loadCredentials(String& ssid, String& pass);
   bool savedSsidVisible(const String& ssid);

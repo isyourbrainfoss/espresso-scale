@@ -42,7 +42,6 @@ struct DisplayState {
 class Display {
  public:
   bool begin();
-  void showSplash();
   void render(const DisplayState& s);
   void setPowerSave(bool on);  // OLED off for standby
   bool powerSave() const { return power_save_; }

@@ -34,6 +34,8 @@ WifiOta::ShotJsonFn g_shot_json;
 WifiOta::HasShotFn g_has_shot;
 WifiOta::ShotsListFn g_shots_list;
 WifiOta::ShotAtFn g_shot_at;
+WifiOta::BootInfoFn g_boot_info;
+WifiOta::TareFn g_tare;
 
 // ---------------------------------------------------------------------------
 // Session secrets (regenerated every time the web server starts)
@@ -368,6 +370,17 @@ void handleRoot() {
   body += F("<br><b>Weight:</b> ");
   body += String(w, 1);
   body += F(" g</p>");
+  if (g_tare) {
+    body += F("<form method=POST action=/tare><input type=hidden name=csrf "
+              "value=\"");
+    body += g_csrf;
+    body += F("\"><button type=submit>Tare</button></form>");
+  }
+  if (g_boot_info) {
+    body += F("<p class=meta>");
+    body += htmlEscape(g_boot_info());
+    body += F("</p>");
+  }
   const bool has_shot = g_has_shot ? g_has_shot() : false;
   body += F("<p><b>Stored shots:</b> ");
   body += has_shot ? F("yes (up to 3)") : F("none");
@@ -391,6 +404,13 @@ void handleRoot() {
   body += F("</code><br>"
             "Or import over Bluetooth when the scale is paired in Flowlog.</p>");
   server.send(200, "text/html", pageShell("Half Decent Scale", body));
+}
+
+void handleTarePost() {
+  if (!guard(true)) return;
+  if (g_tare) g_tare();
+  server.sendHeader("Location", "/");
+  server.send(303, "text/plain", "tared");
 }
 
 void handleShotJson() {
@@ -648,6 +668,7 @@ void setupRoutes() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/wifi", HTTP_GET, handleWifiGet);
   server.on("/wifi", HTTP_POST, handleWifiPost);
+  server.on("/tare", HTTP_POST, handleTarePost);
   server.on("/shot.json", HTTP_GET, handleShotJson);
   server.on("/shots.json", HTTP_GET, handleShotsList);
   server.on("/shot/0.json", HTTP_GET, handleShotAt);
@@ -747,6 +768,7 @@ void WifiOta::clearCredentials() {
 }
 
 void WifiOta::radioOff() {
+  boot_ = BootStep::Done;
   stopServices();
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
@@ -756,8 +778,8 @@ void WifiOta::radioOff() {
 }
 
 bool WifiOta::savedSsidVisible(const String& ssid) {
-  // Directed scan, before BLE is up. If the home SSID is absent this returns
-  // in about a second instead of a 25s join that then starts the setup AP.
+  // Blocking directed scan (serial `wifi connect`, AP idle close). If the
+  // home SSID is absent this returns in about a second.
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(false);
@@ -784,14 +806,13 @@ bool WifiOta::savedSsidVisible(const String& ssid) {
   return found;
 }
 
-bool WifiOta::connectSta(const String& ssid, const String& pass) {
+void WifiOta::beginJoin(const String& ssid, const String& pass,
+                        int32_t channel, const uint8_t* bssid) {
   mode_ = WifiMode::Connecting;
   ssid_ = ssid;
 
   // ESP32-S3 is 2.4 GHz only — 5 GHz APs with the same SSID are invisible.
   WiFi.persistent(false);
-  WiFi.disconnect(true, true);
-  delay(100);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(kHostname);
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 2
@@ -799,8 +820,18 @@ bool WifiOta::connectSta(const String& ssid, const String& pass) {
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
 #endif
-  WiFi.begin(ssid.c_str(), pass.c_str());
-  Serial.printf("[wifi] connecting to \"%s\" (2.4 GHz only)…\n", ssid.c_str());
+  // With channel + BSSID from the directed scan the driver joins directly
+  // instead of scanning all channels a second time.
+  WiFi.begin(ssid.c_str(), pass.c_str(), channel, bssid);
+  join_start_ms_ = millis();
+  Serial.printf("[wifi] connecting to \"%s\" (2.4 GHz only, ch=%d)…\n",
+                ssid.c_str(), static_cast<int>(channel));
+}
+
+bool WifiOta::connectSta(const String& ssid, const String& pass) {
+  WiFi.disconnect(true, true);
+  delay(100);
+  beginJoin(ssid, pass, 0, nullptr);
 
   const uint32_t t0 = millis();
   wl_status_t last = WL_IDLE_STATUS;
@@ -853,6 +884,8 @@ bool WifiOta::tryConnectSaved() {
     radioOff();
     return false;
   }
+  if (boot_ == BootStep::Scanning) WiFi.scanDelete();
+  boot_ = BootStep::Done;
   stopServices();
   if (savedSsidVisible(ssid) && connectSta(ssid, pass)) {
     startServices();
@@ -863,6 +896,8 @@ bool WifiOta::tryConnectSaved() {
 }
 
 void WifiOta::startApPortal() {
+  if (boot_ == BootStep::Scanning) WiFi.scanDelete();
+  boot_ = BootStep::Done;
   stopServices();
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_AP);
@@ -961,6 +996,9 @@ void WifiOta::startServices() {
 }
 
 void WifiOta::end() {
+  if (boot_ == BootStep::Scanning) WiFi.scanDelete();
+  boot_ = BootStep::Done;
+  boot_pass_ = "";
   stopServices();
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
@@ -985,6 +1023,7 @@ bool WifiOta::begin(WeightFn weight_fn, ShotJsonFn shot_json_fn,
   g_shot_at = shot_at_fn_;
   WiFi.persistent(false);
 
+  boot_ = BootStep::Done;
   if (force_setup_ap) {
     Serial.println("[wifi] setup hotspot requested");
     startApPortal();
@@ -998,15 +1037,76 @@ bool WifiOta::begin(WeightFn weight_fn, ShotJsonFn shot_json_fn,
     radioOff();
     return true;
   }
-  if (savedSsidVisible(ssid) && connectSta(ssid, pass)) {
-    startServices();
+  // Directed scan in the background, before BLE is up. If the home SSID is
+  // absent it ends in about a second and the radio goes off — no join
+  // attempt, no setup AP (that combination with BLE rebooted the scale away
+  // from home).
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false);
+  const int16_t r = WiFi.scanNetworks(
+      /*async=*/true, /*show_hidden=*/true, /*passive=*/false,
+      kWifiScanMsPerChan, /*channel=*/0, ssid.c_str());
+  if (r == WIFI_SCAN_FAILED) {
+    Serial.println("[wifi] scan failed to start — radio off");
+    radioOff();
     return true;
   }
-  // Home network missing or join failed. Do not start the setup AP and do
-  // not keep scanning — that combination with BLE is what rebooted the scale
-  // away from home.
-  radioOff();
+  ssid_ = ssid;
+  boot_pass_ = pass;
+  mode_ = WifiMode::Connecting;
+  boot_ = BootStep::Scanning;
   return true;
+}
+
+void WifiOta::setBootInfo(BootInfoFn fn) { g_boot_info = std::move(fn); }
+void WifiOta::setTareHandler(TareFn fn) { g_tare = std::move(fn); }
+
+void WifiOta::bootStep() {
+  if (boot_ == BootStep::Scanning) {
+    const int16_t n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_RUNNING) return;
+    int32_t channel = 0;
+    uint8_t bssid[6] = {};
+    bool found = false;
+    for (int i = 0; i < n; ++i) {  // n < 0 (failed): loop skipped
+      if (ssid_ == WiFi.SSID(i)) {
+        found = true;
+        channel = WiFi.channel(i);
+        memcpy(bssid, WiFi.BSSID(i), sizeof(bssid));
+        Serial.printf("[wifi] saw \"%s\" ch=%d RSSI=%d\n", ssid_.c_str(),
+                      static_cast<int>(channel), WiFi.RSSI(i));
+        break;
+      }
+    }
+    WiFi.scanDelete();
+    if (!found) {
+      Serial.printf("[wifi] saved \"%s\" not in range (scan=%d)\n",
+                    ssid_.c_str(), n);
+      boot_pass_ = "";
+      boot_ = BootStep::Done;
+      radioOff();
+      return;
+    }
+    beginJoin(ssid_, boot_pass_, channel, bssid);
+    boot_pass_ = "";
+    boot_ = BootStep::Joining;
+    return;
+  }
+  if (boot_ == BootStep::Joining) {
+    if (WiFi.status() == WL_CONNECTED) {
+      mode_ = WifiMode::Station;
+      boot_ = BootStep::Done;
+      Serial.printf("[wifi] STA OK %s  RSSI %d ch=%d\n",
+                    WiFi.localIP().toString().c_str(), WiFi.RSSI(),
+                    WiFi.channel());
+      startServices();
+    } else if (millis() - join_start_ms_ >= kWifiConnectTimeoutMs) {
+      Serial.printf("[wifi] STA connect failed (status=%d)\n",
+                    static_cast<int>(WiFi.status()));
+      boot_ = BootStep::Done;
+      radioOff();
+    }
+  }
 }
 
 bool WifiOta::startSetupAp() {
@@ -1037,6 +1137,10 @@ uint32_t WifiOta::apSecondsLeft() const {
 }
 
 void WifiOta::update() {
+  if (boot_ == BootStep::Scanning || boot_ == BootStep::Joining) {
+    bootStep();
+    return;
+  }
   const uint32_t now = millis();
   if (mode_ == WifiMode::Station && WiFi.status() != WL_CONNECTED) {
     if (sta_lost_since_ms_ == 0) {

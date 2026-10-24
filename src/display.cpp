@@ -14,6 +14,9 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 bool Display::begin() {
   Wire.begin(PIN_OLED_SDA, PIN_OLED_SCL);
   u8g2.setI2CAddress(0x3C << 1);
+  // 400 kHz: a full 1 KB frame takes ~25 ms instead of ~90 ms at 100 kHz,
+  // which kept the loop (and HX711 reads) blocked on every refresh.
+  u8g2.setBusClock(400000);
   if (!u8g2.begin()) {
     Serial.println("[display] u8g2 begin failed");
     ready_ = false;
@@ -29,18 +32,6 @@ void Display::setPowerSave(bool on) {
   if (!ready_) return;
   power_save_ = on;
   u8g2.setPowerSave(on ? 1 : 0);
-}
-
-void Display::showSplash() {
-  if (!ready_ || power_save_) return;
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x12_tr);
-  u8g2.drawStr(20, 20, "Flowlog");
-  u8g2.drawStr(28, 36, "Scale");
-  u8g2.setFont(u8g2_font_5x8_tr);
-  u8g2.drawStr(44, 48, kFirmwareVersion);
-  u8g2.drawStr(16, 60, "hold Timer = WiFi");
-  u8g2.sendBuffer();
 }
 
 void Display::render(const DisplayState& s) {

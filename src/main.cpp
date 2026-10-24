@@ -565,13 +565,16 @@ void handleSerial() {
         Serial.println("  Buttons: Tare short=zero, long=sleep");
         Serial.println("           Timer short=timer / confirm OK / stop brew");
         Serial.println("           Timer long=Start brew? prompt");
-        Serial.println("           Hold Timer through splash = WiFi setup AP");
+        Serial.println("           Hold Timer ~1 s at power-on = WiFi setup AP");
         Serial.println("  prs|prs scan|prs off");
         Serial.println("  shot          - print last shot JSON length");
         Serial.println("  wifi / wifi set / wifi scan / wifi connect / wifi ap / wifi clear");
         Serial.println("  nc push|clear - Nextcloud WebDAV for last shot");
+        Serial.println("  zero clear    - forget stored empty-platform zero");
         Serial.println("  auth show     - show device password on the OLED");
         Serial.println("  auth reset    - new random device password (reboots)");
+      } else if (serial_line.equalsIgnoreCase("zero clear")) {
+        scale.clearEmptyZero();
       } else if (serial_line.equalsIgnoreCase("tare")) {
         doTare(false);
       } else if (serial_line.equalsIgnoreCase("sleep")) {
@@ -761,34 +764,153 @@ String shotsListForHttp() { return shot_rec.listJson(); }
 
 String shotAtForHttp(size_t age) { return shot_rec.readSlotJson(age); }
 
-// Cold boot only. A deep-sleep wake leaves Timer or Tare high, and that
-// must not open the setup hotspot.
-bool setupHotspotRequested() {
+bool wokeFromSleep() {
   const auto cause = esp_sleep_get_wakeup_cause();
-  if (cause == ESP_SLEEP_WAKEUP_EXT0 || cause == ESP_SLEEP_WAKEUP_EXT1 ||
-      cause == ESP_SLEEP_WAKEUP_TIMER) {
-    return false;
+  return cause == ESP_SLEEP_WAKEUP_EXT0 || cause == ESP_SLEEP_WAKEUP_EXT1 ||
+         cause == ESP_SLEEP_WAKEUP_TIMER;
+}
+
+// --- Boot sequencing -------------------------------------------------------
+// setup() only brings up what the weight readout needs (HX711, OLED, NVS).
+// loop() then shows live grams while this sequencer starts the radios in the
+// background: Wi-Fi after the boot zero (or kRadioStartMaxDelayMs), BLE once
+// the Wi-Fi scan is over — the same "decide Wi-Fi before NimBLE" order as
+// v1.6.3, without blocking the weighing loop.
+struct BootTimes {
+  uint32_t first_frame = 0;   // weight screen first drawn
+  uint32_t first_live = 0;    // first frame with zeroed, live grams
+  uint32_t wifi_start = 0;
+  uint32_t ble_start = 0;
+  uint32_t wifi_done = 0;
+};
+BootTimes boot_t;
+bool woke_from_sleep = false;
+bool radios_started = false;
+bool ble_started = false;
+// Cold-boot setup-hotspot gesture: Timer held for most of kWifiSetupHoldMs.
+int hold_samples = 0;
+int hold_high = 0;
+uint32_t hold_last_ms = 0;
+bool setup_ap_requested = false;
+// Ignore buttons until released: the finger that woke the scale (or the
+// one holding Timer for the hotspot) must not also tare / start a timer.
+bool buttons_locked = true;
+
+void sampleSetupHold(uint32_t now) {
+  if (woke_from_sleep || radios_started || now >= kWifiSetupHoldMs) return;
+  if (now - hold_last_ms < 40) return;
+  hold_last_ms = now;
+  hold_samples++;
+  if (digitalRead(PIN_BTN_TIMER) == HIGH) hold_high++;
+}
+
+void bootSequencer(uint32_t now) {
+  sampleSetupHold(now);
+
+  if (!radios_started) {
+    if (!woke_from_sleep && now < kWifiSetupHoldMs) return;
+    if (!scale.bootZeroDone() && now < kRadioStartMaxDelayMs) return;
+    radios_started = true;
+    // Most of the hold window, not a tap.
+    setup_ap_requested = !woke_from_sleep && hold_samples > 0 &&
+                         hold_high * 5 >= hold_samples * 4;
+    boot_t.wifi_start = now;
+    if (wifi_ota.mode() == WifiMode::Off) {  // serial `wifi ap` may have won
+      // The setup AP draws its own SSID/password screen; no status overlay.
+      wifi_ota.begin([]() { return scale.displayGrams(); }, shotJsonForHttp,
+                     hasShotForHttp, shotsListForHttp, shotAtForHttp,
+                     setup_ap_requested);
+    }
+    return;  // let loop() run once before NimBLE init
   }
-  const uint32_t t0 = millis();
-  int high = 0;
-  int n = 0;
-  while (millis() - t0 < kWifiSetupHoldMs) {
-    if (digitalRead(PIN_BTN_TIMER) == HIGH) high++;
-    n++;
-    delay(40);
+
+  if (!ble_started && wifi_ota.bootScanDone()) {
+    ble_started = true;
+    boot_t.ble_start = millis();
+    ble.begin(handleBleCommand);
+    prs.begin();
   }
-  // Most of the splash, not a tap.
-  return n > 0 && high * 5 >= n * 4;
+
+  if (!boot_t.wifi_done && wifi_ota.bootSettled()) {
+    boot_t.wifi_done = millis();
+    Serial.printf("[boot] live weight %lu ms, BLE %lu ms, Wi-Fi %s %lu ms\n",
+                  static_cast<unsigned long>(boot_t.first_live),
+                  static_cast<unsigned long>(boot_t.ble_start),
+                  wifi_ota.modeLabel(),
+                  static_cast<unsigned long>(boot_t.wifi_done));
+    wifi_ota.printStatus();
+  }
+}
+
+String bootInfoForHttp() {
+  auto sec = [](uint32_t ms) { return String(ms / 1000.0f, 2) + " s"; };
+  String s = F("Boot: live weight ");
+  s += boot_t.first_live ? sec(boot_t.first_live) : String("-");
+  s += F(" · BLE ");
+  s += boot_t.ble_start ? sec(boot_t.ble_start) : String("-");
+  s += F(" · Wi-Fi ");
+  s += boot_t.wifi_done ? sec(boot_t.wifi_done) : String("-");
+  s += F(" · zero ");
+  switch (scale.bootZero()) {
+    case Scale::BootZero::First:
+      s += F("tared (new empty ref)");
+      break;
+    case Scale::BootZero::Tared:
+      s += F("tared, ");
+      s += String(scale.bootLoadG(), 1);
+      s += F(" g vs empty ref");
+      break;
+    case Scale::BootZero::KeptEmptyZero:
+      s += F("kept empty ref (load ");
+      s += String(scale.bootLoadG(), 1);
+      s += F(" g at boot)");
+      break;
+    default:
+      s += F("pending");
+  }
+  s += F(" · HX711 ");
+  s += String(scale.sps(), 1);
+  s += F(" SPS");
+  return s;
 }
 
 }  // namespace
 
 void setup() {
+  // No settle delay for USB CDC: early lines may be missed by a host that
+  // attaches late, the [boot] summary is printed again once Wi-Fi settles.
   Serial.begin(kSerialBaud);
-  delay(300);
   // Release any GPIO holds left from previous deep sleep (e.g. RGB pin).
   gpio_deep_sleep_hold_dis();
   gpio_hold_dis((gpio_num_t)PIN_BOARD_RGB);
+  woke_from_sleep = wokeFromSleep();
+
+  // HX711 first: it needs ~400 ms to settle, which overlaps everything below.
+  if (!scale.begin()) {
+    Serial.println("[error] scale begin failed");
+  }
+  buzzer.begin();
+  buttons.begin();
+  battery.begin();
+
+  if (!display.begin()) {
+    Serial.println("[warn] OLED init failed — continuing headless");
+  } else {
+    // Straight to the weight screen (held at 0.0 until the boot zero lands).
+    DisplayState st{};
+    st.scale_ok = true;
+    st.target_yield_g = kDefaultTargetYieldG;
+    st.warn_at_g = kDefaultYieldWarnG;
+    st.pressure_bar_min = kPressureBarMinBar;
+    st.pressure_bar_max = kPressureBarMaxBar;
+    display.render(st);
+    boot_t.first_frame = millis();
+  }
+
+  shot_rec.begin();
+  scale_ui.begin();
+  wifi_ota.setBootInfo(bootInfoForHttp);
+  wifi_ota.setTareHandler([]() { doTare(false); });
 
   Serial.println();
   Serial.printf("=== %s v%s ===\n", kProductName, kFirmwareVersion);
@@ -797,49 +919,11 @@ void setup() {
   Serial.println("Tare short = zero (beans safe). Tare long = sleep.");
   Serial.println("Timer short = kitchen timer. Timer long = Start brew?");
   Serial.println("  then Timer again = start (tare+PRS+REC), Tare = cancel.");
-  Serial.println("Hold Timer through the splash to open the WiFi setup hotspot.");
-
-  buzzer.begin();
-  buttons.begin();
-  battery.begin();
-  shot_rec.begin();
-  scale_ui.begin();
-
-  if (!display.begin()) {
-    Serial.println("[warn] OLED init failed — continuing headless");
-  } else {
-    display.showSplash();
-  }
-
-  // Decide WiFi before NimBLE starts. A missing home SSID must not scan or
-  // bring up the setup AP next to BLE — that is what rebooted the scale
-  // away from home.
-  const bool setup_ap = setupHotspotRequested();
-  {
-    DisplayState st{};
-    st.status = setup_ap ? "WiFi setup" : "Starting";
-    display.render(st);
-  }
-
-  if (!scale.begin()) {
-    Serial.println("[error] scale begin failed");
-  }
-
-  wifi_ota.begin([]() { return scale.displayGrams(); }, shotJsonForHttp,
-                 hasShotForHttp, shotsListForHttp, shotAtForHttp, setup_ap);
-  wifi_ota.printStatus();
-
-  ble.begin(handleBleCommand);
-  prs.begin();
-  if (wifi_ota.isAccessPoint()) {
-    setStatus("WiFi setup AP", 4000);
-  } else if (wifi_ota.isStation()) {
-    setStatus("WiFi OK", 2000);
-  }
-  if (wifi_ota.setupScreenActive()) status_msg = nullptr;  // show password
+  Serial.println("Hold Timer for ~1 s right after power-on to open the WiFi "
+                 "setup hotspot.");
 
   buzzer.bootChime();
-  auto_armed = true;  // boot tare already zeroed platform
+  auto_armed = true;  // boot zero lands within ~1 s
   last_notify_ms = millis();
   last_display_ms = millis();
 }
@@ -847,9 +931,12 @@ void setup() {
 void loop() {
   scale.update();
   buzzer.update();
-  ble.update();
-  ble.pumpShotTransfer();
-  prs.update();
+  bootSequencer(millis());
+  if (ble_started) {
+    ble.update();
+    ble.pumpShotTransfer();
+    prs.update();
+  }
   wifi_ota.update();
   battery.update();
   handleSerial();
@@ -864,6 +951,12 @@ void loop() {
   was_ble = ble.isConnected();
 
   BtnEvent ev = buttons.poll();
+  if (buttons_locked) {
+    if (digitalRead(PIN_BTN_TARE) == LOW && digitalRead(PIN_BTN_TIMER) == LOW) {
+      buttons_locked = false;
+    }
+    ev = BtnEvent::None;
+  }
   if (ev != BtnEvent::None) handleButton(ev);
 
   const uint32_t now = millis();

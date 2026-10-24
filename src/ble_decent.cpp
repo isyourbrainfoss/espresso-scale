@@ -79,6 +79,7 @@ void BleDecent::startAdvertising() {
 }
 
 void BleDecent::end() {
+  if (g_ble == nullptr) return;  // never started (e.g. sleep during boot)
   stopping_ = true;
   if (server) {
     NimBLEDevice::getAdvertising()->stop();

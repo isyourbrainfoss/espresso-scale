@@ -110,6 +110,7 @@ void PressensorClient::requestConnect() {
 
 void PressensorClient::disconnect() {
   connect_requested_ = false;
+  if (g_prs == nullptr) return;
   stopScan();
   if (g_client && g_client->isConnected()) {
     g_client->disconnect();
@@ -153,6 +154,7 @@ bool PressensorClient::startScan() {
 }
 
 void PressensorClient::stopScan() {
+  if (g_prs == nullptr) return;  // BLE stack not started yet
   NimBLEScan* scan = NimBLEDevice::getScan();
   if (scan && scan->isScanning()) {
     scan->stop();
@@ -161,6 +163,7 @@ void PressensorClient::stopScan() {
 }
 
 void PressensorClient::update() {
+  if (g_prs == nullptr) return;  // BLE stack not started yet
   if (!connect_requested_) return;
   if (connected_ || scanning_) return;
 
