@@ -890,6 +890,14 @@ String bootInfoForHttp() {
     case ESP_RST_BROWNOUT: s += F("BROWNOUT"); break;
     default: s += String(static_cast<int>(esp_reset_reason()));
   }
+  // Heap: free now, lowest since boot, largest single block (fragmentation).
+  s += F(" · heap ");
+  s += String(ESP.getFreeHeap() / 1024);
+  s += F(" KB free, min ");
+  s += String(ESP.getMinFreeHeap() / 1024);
+  s += F(" KB, largest block ");
+  s += String(ESP.getMaxAllocHeap() / 1024);
+  s += F(" KB");
   return s;
 }
 

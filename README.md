@@ -7,7 +7,16 @@ Breadboard espresso scale firmware for **ESP32-S3 Super Mini** + HX711 + SSD1306
 
 Built as the **companion scale for [Flowlog](https://github.com/isyourbrainfoss/Flowlog)** using the public **Decent Scale BLE** protocol (device still advertises as `Decent Scale` so pairing stays unchanged).
 
-## Features (v1.7.0)
+## Features (v1.8.0)
+
+v1.8.0 is a memory release. The firmware is ~65 KB smaller (Arduino library
+log strings off, mbedTLS error table and the floating-point `sscanf` dropped
+via link-time shims in `src/size_shims.cpp`), stored shots are streamed from
+SPIFFS instead of being built in RAM, and the status page shows heap use and
+the last reset reason. It also uses a new partition table,
+`partitions_4mb_ota.csv`: two 1.625 MB app slots (was 1.25 MB) and 640 KB
+SPIFFS (was 1.375 MB). **Moving to or from this table needs a USB flash** — see
+*Partition table* below.
 
 v1.7.0 shows live grams about a second after power-on or wake. The HX711
 zeroes in the background while the weight screen is already up; Wi‑Fi (one
@@ -182,6 +191,30 @@ OLED shows a small `WiFi` or `AP` label when wireless is up.
 5. Flowlog **History → Import from scale** (`http://half-decent.local/shot.json`).
 
 Serial: `brew start` / `brew stop` / `prs` / `shot` / `nc push`.
+
+### Partition table (v1.8.0+)
+
+`partitions_4mb_ota.csv` keeps `nvs` (0x9000) and `otadata` (0xe000) where the
+Arduino default table has them, so calibration, Wi‑Fi and the device password
+survive. SPIFFS moves, so stored shots are lost once (it is reformatted on
+first boot). OTA cannot change the partition table; the first switch is a USB
+flash of all four images (otadata erased so the scale boots app0):
+
+```bash
+pio run                                   # builds bootloader/partitions/firmware
+B=.pio/build/esp32-s3-super-mini
+esptool.py --chip esp32s3 -p /dev/ttyACM0 -b 921600 erase_region 0xe000 0x2000
+esptool.py --chip esp32s3 -p /dev/ttyACM0 -b 921600 write_flash \
+  0x0 $B/bootloader.bin 0x8000 $B/partitions.bin \
+  0xe000 ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
+  0x10000 $B/firmware.bin
+```
+
+After that, normal OTA (web or ArduinoOTA) works. The app reads the partition
+table from flash at run time, so an older image (e.g. v1.7.0) can still be
+OTA'd onto this table and runs normally (with the new SPIFFS location). Going
+back to the old *layout* needs USB: flash the old `partitions.bin` with its
+firmware, or write a full flash dump back at 0x0.
 
 ### OTA update (PlatformIO)
 
