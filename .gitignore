@@ -9,3 +9,6 @@
 *.pyc
 __pycache__/
 .DS_Store
+
+# Local one-off password provisioning header (never commit)
+include/device_password_provision.h

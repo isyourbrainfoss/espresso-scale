@@ -6,6 +6,16 @@
 
 #include "config.h"
 
+// Optional, for provisioning a known password over OTA (no serial/OLED
+// access): an untracked include/device_password_provision.h defining
+// kProvisionDevicePassword. When present, that password overwrites the one
+// in NVS on boot. Build a normal image afterwards (without the header): it
+// keeps using the stored password. The header is .gitignored; never commit it.
+#if __has_include("device_password_provision.h")
+#include "device_password_provision.h"
+#define HALF_DECENT_HAS_PROVISION 1
+#endif
+
 namespace device_auth {
 namespace {
 
@@ -67,6 +77,19 @@ void begin() {
     g_password = prefs.getString(kNvsPw, "");
     prefs.end();
   }
+#ifdef HALF_DECENT_HAS_PROVISION
+  {
+    const String provisioned(kProvisionDevicePassword);
+    if (looksValid(provisioned) && provisioned != g_password) {
+      g_password = provisioned;
+      if (prefs.begin(kNvsNs, false)) {
+        prefs.putString(kNvsPw, g_password);
+        prefs.end();
+        Serial.println("[auth] device password provisioned from build");
+      }
+    }
+  }
+#endif
   if (!looksValid(g_password)) {
     g_password = generatePassword();
     g_generated = true;
