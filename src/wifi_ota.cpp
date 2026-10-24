@@ -5,6 +5,7 @@
 #include <HTTPClient.h>
 #include <MD5Builder.h>
 #include <Preferences.h>
+#include <SPIFFS.h>
 #include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -34,6 +35,7 @@ WifiOta::ShotJsonFn g_shot_json;
 WifiOta::HasShotFn g_has_shot;
 WifiOta::ShotsListFn g_shots_list;
 WifiOta::ShotAtFn g_shot_at;
+WifiOta::ShotFileFn g_shot_file;
 WifiOta::BootInfoFn g_boot_info;
 WifiOta::TareFn g_tare;
 
@@ -413,7 +415,22 @@ void handleTarePost() {
   server.send(303, "text/plain", "tared");
 }
 
+// Stream a stored shot straight from SPIFFS (~1.4 KB chunks) instead of
+// loading up to ~65 KB into one String first.
+bool streamStoredShot(size_t age) {
+  if (!g_shot_file) return false;
+  char path[24];
+  if (!g_shot_file(age, path, sizeof(path))) return false;
+  File f = SPIFFS.open(path, FILE_READ);
+  if (!f) return false;
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.streamFile(f, "application/json");
+  f.close();
+  return true;
+}
+
 void handleShotJson() {
+  if (streamStoredShot(0)) return;
   if (!g_shot_json) {
     server.send(503, "application/json", "{\"error\":\"no shot provider\"}");
     return;
@@ -449,6 +466,7 @@ void handleShotAt() {
     server.send(404, "application/json", "{\"error\":\"invalid shot index\"}");
     return;
   }
+  if (streamStoredShot(static_cast<size_t>(age))) return;
   String json = g_shot_at(static_cast<size_t>(age));
   if (json.isEmpty()) {
     server.send(404, "application/json", "{\"error\":\"no shot at index\"}");
@@ -1032,6 +1050,8 @@ void WifiOta::end() {
   g_wifi = nullptr;
   Serial.println("[wifi] off");
 }
+
+void WifiOta::setShotFileFn(ShotFileFn fn) { g_shot_file = std::move(fn); }
 
 bool WifiOta::begin(WeightFn weight_fn, ShotJsonFn shot_json_fn,
                     HasShotFn has_shot_fn, ShotsListFn shots_list_fn,

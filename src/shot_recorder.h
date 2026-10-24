@@ -43,6 +43,9 @@ class ShotRecorder {
 
   // Ring access: age 0 = newest, 1 = previous, 2 = oldest.
   String readSlotJson(size_t age) const;
+  // SPIFFS path of a stored shot (age 0 = newest), for streaming it to HTTP
+  // clients without loading it into RAM. False if there is no such shot.
+  bool slotFile(size_t age, char* out, size_t out_len) const;
   String readFlashJson() const { return readSlotJson(0); }  // newest
   ShotSlotMeta slotMeta(size_t age) const;
   // Compact list for GET /shots.json (no sample arrays).

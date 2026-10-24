@@ -360,9 +360,27 @@ String ShotRecorder::readSlotJson(size_t age) const {
   if (!SPIFFS.exists(path)) return String();
   File f = SPIFFS.open(path, FILE_READ);
   if (!f) return String();
-  String s = f.readString();
+  // One exact-size allocation + 512 B chunks. Stream::readString() appends
+  // byte by byte and re-grows the String up to the file size (~65 KB),
+  // which is slow and fragments the heap.
+  String s;
+  if (!s.reserve(f.size())) {
+    f.close();
+    return String();
+  }
+  char buf[512];
+  size_t n;
+  while ((n = f.read(reinterpret_cast<uint8_t*>(buf), sizeof(buf))) > 0) {
+    s.concat(buf, n);
+  }
   f.close();
   return s;
+}
+
+bool ShotRecorder::slotFile(size_t age, char* out, size_t out_len) const {
+  if (age >= stored_count_) return false;
+  slotPath(physicalIndex(age), out, out_len);
+  return SPIFFS.exists(out);
 }
 
 ShotSlotMeta ShotRecorder::slotMeta(size_t age) const {

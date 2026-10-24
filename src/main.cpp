@@ -818,6 +818,9 @@ void bootSequencer(uint32_t now) {
     boot_t.wifi_start = now;
     if (wifi_ota.mode() == WifiMode::Off) {  // serial `wifi ap` may have won
       // The setup AP draws its own SSID/password screen; no status overlay.
+      wifi_ota.setShotFileFn([](size_t age, char* path, size_t len) {
+        return shot_rec.slotFile(age, path, len);
+      });
       wifi_ota.begin([]() { return scale.displayGrams(); }, shotJsonForHttp,
                      hasShotForHttp, shotsListForHttp, shotAtForHttp,
                      setup_ap_requested);

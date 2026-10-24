@@ -34,6 +34,8 @@ class WifiOta {
   using ShotsListFn = std::function<String()>;
   // Optional: GET /shot/<age>.json — age 0 = newest.
   using ShotAtFn = std::function<String(size_t age)>;
+  // Fills the SPIFFS path of stored shot `age`; false if none.
+  using ShotFileFn = std::function<bool(size_t age, char* path, size_t len)>;
 
   // Extra status-page line (boot timing / zero), and the web Tare action.
   using BootInfoFn = std::function<String()>;
@@ -44,6 +46,8 @@ class WifiOta {
   // Non-blocking: starts a directed scan for the saved SSID and returns.
   // update() finishes the scan and the join in the background.
   // force_setup_ap opens the setup AP and does not try the home SSID.
+  // Lets /shot.json and /shot/N.json stream stored shots from SPIFFS.
+  void setShotFileFn(ShotFileFn fn);
   bool begin(WeightFn weight_fn = nullptr, ShotJsonFn shot_json_fn = nullptr,
              HasShotFn has_shot_fn = nullptr,
              ShotsListFn shots_list_fn = nullptr,
