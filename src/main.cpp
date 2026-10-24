@@ -3,6 +3,7 @@
 #include <cstring>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
+#include <esp_system.h>
 
 #include "battery.h"
 #include "ble_decent.h"
@@ -874,7 +875,18 @@ String bootInfoForHttp() {
   }
   s += F(" · HX711 ");
   s += String(scale.sps(), 1);
-  s += F(" SPS");
+  s += F(" SPS · last reset ");
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: s += F("power-on"); break;
+    case ESP_RST_SW: s += F("software"); break;
+    case ESP_RST_PANIC: s += F("PANIC"); break;
+    case ESP_RST_INT_WDT: s += F("INT_WDT"); break;
+    case ESP_RST_TASK_WDT: s += F("TASK_WDT"); break;
+    case ESP_RST_WDT: s += F("WDT"); break;
+    case ESP_RST_DEEPSLEEP: s += F("deep-sleep wake"); break;
+    case ESP_RST_BROWNOUT: s += F("BROWNOUT"); break;
+    default: s += String(static_cast<int>(esp_reset_reason()));
+  }
   return s;
 }
 
