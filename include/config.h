@@ -43,8 +43,12 @@ static constexpr uint32_t kAuthLockoutMs = 60000;
 // Join only after a short directed scan sees the saved SSID. No AP fallback.
 static constexpr uint32_t kWifiConnectTimeoutMs = 12000;
 static constexpr uint32_t kWifiScanMsPerChan = 80;
-// Cold boot: hold Timer through this splash window to open the setup hotspot.
+// Cold boot: hold Timer for this long after power-on to open the setup
+// hotspot. Sampled from loop() while the weight is already live.
 static constexpr uint32_t kWifiSetupHoldMs = 1200;
+// Radios start after the boot zero (RF bursts add HX711 noise) or at the
+// latest this long after boot. BLE comes up once the Wi-Fi scan is over.
+static constexpr uint32_t kRadioStartMaxDelayMs = 2500;
 // If STA drops (left the house), turn WiFi off instead of reconnecting forever.
 static constexpr uint32_t kWifiStaGiveUpMs = 12000;
 
@@ -73,6 +77,18 @@ static constexpr uint32_t kBtnLongPressMs = 1000;
 static constexpr uint32_t kBtnBothHoldCalMs = 3000;
 // Hold Timer alone this long: show device password / open Wi-Fi setup AP.
 static constexpr uint32_t kBtnSetupHoldMs = 5000;
+
+// Zero / tare (see Scale). HX711 output settles ~400 ms after power-up.
+static constexpr uint32_t kHx711SettleMs = 400;
+// A tare averages one fresh sample window; it waits for a still window
+// (spread below this) but never longer than kTareMaxWaitMs.
+static constexpr float kTareStableSpreadG = 1.0f;
+static constexpr uint32_t kTareMaxWaitMs = 1500;
+// Boot: platform heavier than the stored empty zero by at least this much
+// means something sits on it, so keep the empty zero instead of taring.
+static constexpr float kBootZeroLoadG = 40.0f;
+// Rewrite the stored empty zero only when it moved by more than this.
+static constexpr float kEmptyZeroRewriteG = 0.5f;
 
 // Calibration
 static constexpr float kDefaultCalMassG = 100.0f;
